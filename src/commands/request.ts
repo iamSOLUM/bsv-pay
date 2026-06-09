@@ -1,4 +1,4 @@
-﻿import type { Ctx } from '../context.js';
+import type { Ctx } from '../context.js';
 import { CliError, EXIT } from '../errors.js';
 
 export interface RequestOptions {

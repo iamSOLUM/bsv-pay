@@ -181,6 +181,14 @@ export class Wallet {
     return hit ? this.keyAt(hit.chain, hit.index) : undefined;
   }
 
+  /** Next address for a purpose WITHOUT persisting anything (dry runs). */
+  peekAddress(purpose: 'receive' | 'change'): { address: string; index: number } {
+    if (!this.isHd) return { address: this.addressAt(0, 0), index: 0 };
+    const chain = purpose === 'change' ? 1 : 0;
+    const index = chain === 0 ? this.file.next_receive_index : this.file.next_change_index;
+    return { address: this.addressAt(chain, index), index };
+  }
+
   /** Derive a fresh address, persist the counter, and record it in the ledger. */
   issueAddress(
     purpose: 'receive' | 'change' | 'request',
