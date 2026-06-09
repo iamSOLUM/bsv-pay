@@ -32,7 +32,10 @@ export class WhatsOnChainProvider implements ChainProvider {
   readonly baseUrl: string;
 
   constructor(public readonly network: Network) {
-    this.baseUrl = `https://api.whatsonchain.com/v1/bsv/${network}`;
+    // BSV_PAY_API_URL points at any WhatsOnChain-compatible API root
+    // (self-hosted instance, or the local e2e mock server).
+    const root = process.env.BSV_PAY_API_URL ?? 'https://api.whatsonchain.com/v1/bsv';
+    this.baseUrl = `${root.replace(/\/$/, '')}/${network}`;
   }
 
   /**

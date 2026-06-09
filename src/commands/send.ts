@@ -88,9 +88,12 @@ export async function cmdSend(
 ): Promise<void> {
   const chain = provider ?? new WhatsOnChainProvider(ctx.network);
 
-  // 1. Validate everything local BEFORE touching the network (invariant 4).
+  // 1. Validate everything local BEFORE unlocking or touching the network
+  //    (invariant 4): address, amount, then the spend limit — a script that
+  //    is over the limit fails fast with exit 8, not after network calls.
   validateAddress(address, ctx.network);
   const amountSats = parseAmount(amountArg);
+  await enforceSpendLimit(ctx, amountSats, opts);
   const wallet = await Wallet.unlock(ctx.network);
 
   // 2. Gather funds and plan the transaction.
@@ -100,10 +103,8 @@ export async function cmdSend(
   const balanceAfter = totalAvailable - amountSats - selection.fee;
   const change = wallet.peekAddress('change');
 
-  // 3. Spend limit, then per-send confirmation (always shows recipient,
-  //    amount, fee, and resulting balance before broadcast).
-  await enforceSpendLimit(ctx, amountSats, opts);
-
+  // 3. Per-send confirmation (always shows recipient, amount, fee, and
+  //    resulting balance before broadcast).
   if (opts.dryRun) {
     process.stderr.write(chalk.bold('Dry run — nothing will be broadcast.') + '\n');
   }

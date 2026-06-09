@@ -164,8 +164,14 @@ npm install
 npm test            # vitest unit suite (mock provider, no live network)
 npm run lint
 npm run build
-node scripts/e2e-testnet.mjs   # live testnet loop, needs BSV_PAY_E2E=1
+npm run e2e:local   # full loop through the real CLI against a local mock API
+node scripts/e2e-testnet.mjs   # live testnet loop, needs BSV_PAY_E2E=1 + faucet coins
 ```
+
+`e2e:local` runs the whole definition-of-done loop (init → request → payment →
+watch detects → send back → balance reconciles) by spawning the actual binary
+against a local WhatsOnChain-compatible server — no coins or captchas needed.
+Point the CLI at any WoC-compatible API with `BSV_PAY_API_URL`.
 
 The local ledger (`~/.bsv-pay/ledger.jsonl`) is append-only JSONL recording
 every send, receive, and issued address.
