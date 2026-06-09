@@ -33,6 +33,15 @@ export function appendLedger(network: Network, entry: LedgerEntry): void {
   fs.appendFileSync(file, JSON.stringify(entry) + '\n', { mode: 0o600 });
 }
 
+/** Unique addresses this wallet has issued, oldest first (no unlock needed). */
+export function trackedAddressesFromLedger(network: Network): string[] {
+  const seen = new Set<string>();
+  for (const entry of readLedger(network)) {
+    if (entry.type === 'address_issued') seen.add(entry.address);
+  }
+  return [...seen];
+}
+
 export function readLedger(network: Network): LedgerEntry[] {
   const file = ledgerPath(network);
   if (!fs.existsSync(file)) return [];
