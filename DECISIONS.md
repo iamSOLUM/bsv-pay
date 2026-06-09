@@ -2,6 +2,10 @@
 
 Running log of non-blocking decisions made while building bsv-pay.
 
+## Licensing
+
+- **MIT, confirmed by the owner (2026-06-10)** after weighing source-available and dual-license options. Rationale: for a hot-wallet CLI, trust and adoption are the asset — auditability is a feature, and the monetization path is around the tool (donations, services, hosting) rather than license sales.
+
 ## M1 — Scaffold
 
 - **TOML parser**: `smol-toml` (pure TS, maintained, TOML 1.0). The PRD fixes the major stack but not a TOML library; this is the lightest compliant option.
