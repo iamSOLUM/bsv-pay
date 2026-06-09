@@ -26,7 +26,8 @@ function run<A extends unknown[]>(fn: (ctx: Ctx, ...args: A) => Promise<void>) {
     let ctx: Ctx | undefined;
     try {
       ctx = buildCtx(opts);
-      await fn(ctx, ...(cmdArgs.slice(0, -2) as A));
+      // keep positional args + the options object, drop the trailing Command
+      await fn(ctx, ...(cmdArgs.slice(0, -1) as A));
       process.exitCode = EXIT.OK;
     } catch (err) {
       const out = ctx?.out ?? new Output(Boolean(opts.json));
@@ -49,6 +50,7 @@ program
   .option('--import-wif', 'import a raw WIF private key (not recommended)')
   .option('--force', 'overwrite an existing wallet')
   .option('--no-encrypt', 'EXPLICIT OPT-IN: store the seed unencrypted (dangerous)')
+  .option('--brc100', 'connect a BRC-100 wallet (not yet supported)')
   .action(run<[InitOptions]>((ctx, opts) => cmdInit(ctx, opts)));
 
 program
