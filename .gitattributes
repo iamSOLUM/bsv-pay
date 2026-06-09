@@ -1,0 +1,4 @@
+# Keep LF everywhere (repo and working tree) so Windows checkouts don't
+# generate CRLF conversion warnings on every commit.
+* text=auto eol=lf
+*.tgz binary
