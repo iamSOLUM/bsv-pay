@@ -51,6 +51,6 @@ Running log of non-blocking decisions made while building bsv-pay.
 
 ## M7 — polish
 
-- **Donation placeholder addresses** are the well-known "eater" addresses (mainnet `1BitcoinEater…`, testnet `mipcBbFg…`) — valid checksums so the full send path works, with a loud warning that coins sent there are unrecoverable. TODO in `donate.ts` to replace before 1.0.
+- **Donation address**: mainnet donations go to the real project address `131CswxfV8Swi8zUSc3XfH9tEJLxzxmpa4` (provided by the owner on 2026-06-10). The testnet entry remains the well-known `mipcBbFg…` placeholder (valid checksum, no key holder) and warns accordingly.
 - **E2E testnet script** (`scripts/e2e-testnet.mjs`) is gated behind `BSV_PAY_E2E=1`, drives the CLI exclusively through `--json` + exit codes, and requires one manual faucet payment.
 - **Global-install verification**: Docker is not installed on this machine, so the "clean Docker container" check was substituted with an `npm install -g --prefix <fresh dir>` of the packed tarball — verified `--version`, JSON error shapes, exit codes 2/3, and a live testnet init/request/balance loop through the installed binary. Re-run in Docker (`docker run -it node:22 npm i -g bsv-pay-0.1.0.tgz`) when available.

@@ -88,8 +88,9 @@ gracefully; Ctrl-C exits cleanly with a session summary.
 
 ### `bsv-pay donate [amount]`
 
-Sends a donation (default 10,000 sats) to the project. The address is still a
-placeholder — the command warns loudly; use `--dry-run`.
+Sends a donation (default 10,000 sats) to the project donation address
+(`131CswxfV8Swi8zUSc3XfH9tEJLxzxmpa4`). On testnet the address is still a
+placeholder — the command warns; use `--dry-run` there.
 
 ## Amounts
 

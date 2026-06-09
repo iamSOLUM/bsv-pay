@@ -9,11 +9,10 @@ export interface DonateOptions {
   dryRun?: boolean;
 }
 
-// TODO: replace with the real project donation addresses before 1.0.
-// These are well-known placeholder addresses (no one holds their keys) —
-// the warning below makes sure nobody burns real coins by accident.
+// TODO: the testnet address is still a well-known placeholder (no one holds
+// its key) — replace if testnet donations ever matter.
 const DONATION_ADDRESS: Record<'main' | 'test', string> = {
-  main: '1BitcoinEaterAddressDontSendf59kuE',
+  main: '131CswxfV8Swi8zUSc3XfH9tEJLxzxmpa4',
   test: 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn',
 };
 
@@ -25,11 +24,13 @@ export async function cmdDonate(
   opts: DonateOptions,
   provider?: ChainProvider,
 ): Promise<void> {
-  process.stderr.write(
-    chalk.yellow(
-      'NOTE: the donation address is still a PLACEHOLDER (see TODO in donate.ts) — coins sent to it are unrecoverable. Use --dry-run unless you really mean it.',
-    ) + '\n',
-  );
+  if (ctx.network === 'test') {
+    process.stderr.write(
+      chalk.yellow(
+        'NOTE: the testnet donation address is a PLACEHOLDER — coins sent to it are unrecoverable. Use --dry-run.',
+      ) + '\n',
+    );
+  }
   process.stderr.write('Thanks for supporting bsv-pay!\n');
   await cmdSend(
     ctx,

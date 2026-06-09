@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe('cmdDonate', () => {
-  it('dry-runs a default 10k-sat donation to the placeholder address', async () => {
+  it('dry-runs a default 10k-sat donation to the project address', async () => {
     const provider = new MockChainProvider();
     provider.utxos.set(addr, [{ txid: 'cd'.repeat(32), vout: 0, satoshis: 50_000, height: 1 }]);
     const lines: string[] = [];
@@ -54,7 +54,7 @@ describe('cmdDonate', () => {
     const result = JSON.parse(lines.join(''));
     expect(result.dry_run).toBe(true);
     expect(result.amount_sats).toBe(10_000);
-    expect(result.recipient).toBe('1BitcoinEaterAddressDontSendf59kuE');
+    expect(result.recipient).toBe('131CswxfV8Swi8zUSc3XfH9tEJLxzxmpa4');
     expect(provider.broadcasts).toHaveLength(0);
   });
 });
