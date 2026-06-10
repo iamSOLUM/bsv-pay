@@ -127,6 +127,39 @@ bsv-pay send "$DEST" 5000sats --yes --json | jq -r .txid
 
 The whole receive→send loop is scriptable with `--json` + exit codes alone.
 
+## Library usage — `bsv-pay/core`
+
+The CLI is a thin layer over an importable engine. `bsv-pay/core` exposes the
+same operations with typed results and typed errors — no prompts, no console
+output, no `process.exit`, and never any key material in a return value:
+
+```ts
+import { openWallet, getBalance, send, createRequest, awaitPayment, BsvPayError } from 'bsv-pay/core';
+
+const opts = { network: 'test' } as const;
+const wallet = await openWallet({ ...opts, passphrase: process.env.WALLET_PASS });
+
+const { confirmedSats, unconfirmedSats } = await getBalance(opts);
+
+try {
+  const result = await send(wallet, opts, { to: address, amountSats: 5000, memo: 'thanks' });
+  console.log(result.txid, result.feeSats);
+} catch (e) {
+  if (e instanceof BsvPayError) console.error(e.errorCode, e.exitCode); // e.g. insufficient_funds, 3
+}
+
+const invoice = createRequest(wallet, { amountSats: 10_000, memo: 'invoice #7' });
+const paid = await awaitPayment(opts, { address: invoice.address, timeoutMs: 600_000 });
+```
+
+`BsvPayError.exitCode` carries the same stable numbers as the CLI exit codes
+below; `errorCode` is the same snake_case string `--json` emits. The config
+spend limit applies to library sends too (`allowAboveLimit` mirrors
+`--allow-large`); ledger entries are written exactly as the CLI writes them.
+`planSend()`/`executeSend()` split the flow when you need to show fees before
+committing, and `getHistory()` reads the local ledger. Wallet *creation* is
+CLI-only for now — run `bsv-pay init` first.
+
 ## Configuration — `~/.bsv-pay/config.toml`
 
 ```toml
@@ -170,8 +203,9 @@ node scripts/e2e-testnet.mjs   # live testnet loop, needs BSV_PAY_E2E=1 + faucet
 
 `e2e:local` runs the whole definition-of-done loop (init → request → payment →
 watch detects → send back → balance reconciles) by spawning the actual binary
-against a local WhatsOnChain-compatible server — no coins or captchas needed.
-Point the CLI at any WoC-compatible API with `BSV_PAY_API_URL`.
+against a local WhatsOnChain-compatible server — no coins or captchas needed —
+then re-runs the loop through the built `bsv-pay/core` library against the
+same mock. Point the CLI at any WoC-compatible API with `BSV_PAY_API_URL`.
 
 The local ledger (`~/.bsv-pay/ledger.jsonl`) is append-only JSONL recording
 every send, receive, and issued address.
