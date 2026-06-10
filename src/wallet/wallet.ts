@@ -77,15 +77,26 @@ export function buildWalletFile(
   return { ...base, encrypted: true, kdf, cipher };
 }
 
-function unencryptedWarning(): void {
-  process.stderr.write(
-    'WARNING: this wallet stores its seed UNENCRYPTED on disk. Anyone who can read\n' +
-      '~/.bsv-pay can spend your funds. Re-run "bsv-pay init --force" to encrypt.\n',
-  );
+export const UNENCRYPTED_WALLET_WARNING =
+  'WARNING: this wallet stores its seed UNENCRYPTED on disk. Anyone who can read\n' +
+  '~/.bsv-pay can spend your funds. Re-run "bsv-pay init --force" to encrypt.';
+
+/**
+ * How unlock obtains the passphrase and reports warnings. Defaults preserve
+ * CLI behavior (env var, then interactive prompt; warnings to stderr); the
+ * core library passes explicit values so it never prompts or prints.
+ */
+export interface UnlockOptions {
+  /** Passphrase or async supplier; default: BSV_PAY_PASSPHRASE env, then interactive prompt. */
+  passphrase?: string | (() => Promise<string>);
+  /** Sink for human warnings (e.g. unencrypted wallet); default: stderr. */
+  onWarning?: (text: string) => void;
 }
 
 /** Resolve the passphrase: env var for scripts, otherwise interactive prompt. */
-async function obtainPassphrase(): Promise<string> {
+async function obtainPassphrase(supplied?: string | (() => Promise<string>)): Promise<string> {
+  if (typeof supplied === 'string') return supplied;
+  if (typeof supplied === 'function') return supplied();
   const env = process.env.BSV_PAY_PASSPHRASE;
   if (env !== undefined) return env;
   if (!isInteractive()) {
@@ -113,8 +124,9 @@ export class Wallet {
     private readonly hd: HD | null,
   ) {}
 
-  static async unlock(network: Network): Promise<Wallet> {
+  static async unlock(network: Network, options: UnlockOptions = {}): Promise<Wallet> {
     const file = readWalletFile(network);
+    const warn = options.onWarning ?? ((text: string) => process.stderr.write(text + '\n'));
     let secret: SecretPayload;
     if (file.encrypted) {
       if (!file.kdf || !file.cipher) {
@@ -124,10 +136,10 @@ export class Wallet {
           'Wallet file is marked encrypted but has no cipher data.',
         );
       }
-      const passphrase = await obtainPassphrase();
+      const passphrase = await obtainPassphrase(options.passphrase);
       secret = JSON.parse(decryptSecret(file.kdf, file.cipher, passphrase)) as SecretPayload;
     } else {
-      unencryptedWarning();
+      warn(UNENCRYPTED_WALLET_WARNING);
       if (!file.secret) {
         throw new CliError(EXIT.UNEXPECTED, 'corrupt_wallet', 'Wallet file has no secret payload.');
       }
