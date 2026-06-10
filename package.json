@@ -16,6 +16,13 @@
   "bin": {
     "bsv-pay": "dist/cli.js"
   },
+  "exports": {
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "README.md"

@@ -17,6 +17,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { pathToFileURL } from 'node:url';
 import { Transaction, Utils } from '@bsv/sdk';
 
 const CLI = path.resolve(import.meta.dirname, '../dist/cli.js');
@@ -210,6 +211,62 @@ try {
     (await cli(['send', RETURN_ADDRESS, '100000', '--yes'], { allowExit: [8] })).status === 8,
     'spend limit exits 8',
   );
+
+  // 7. the same engine through the bsv-pay/core library (M8): built artifact,
+  //    same mock chain, same state dir the CLI just used.
+  console.error('[7/7] bsv-pay/core library leg');
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../package.json'), 'utf8'));
+  const coreExport = pkg.exports?.['./core'];
+  check(
+    !!coreExport &&
+      fs.existsSync(path.resolve(import.meta.dirname, '..', coreExport.default)) &&
+      fs.existsSync(path.resolve(import.meta.dirname, '..', coreExport.types)),
+    'package.json exports ./core with built js + d.ts',
+  );
+
+  process.env.BSV_PAY_HOME = HOME;
+  process.env.BSV_PAY_API_URL = apiUrl;
+  const core = await import(pathToFileURL(path.resolve(import.meta.dirname, '../dist/core/index.js')).href);
+  const coreOpts = { network: 'test' };
+
+  const libBal = await core.getBalance(coreOpts);
+  check(
+    libBal.confirmedSats + libBal.unconfirmedSats === total2,
+    `library getBalance matches the CLI (${total2} sats)`,
+  );
+  const movements = await core.getHistory(coreOpts);
+  check(
+    movements.length === 2 && movements[0].type === 'send' && movements[1].type === 'receive',
+    'library getHistory sees the CLI loop, newest first',
+  );
+
+  // passphrase passed explicitly (no env var in this process) — never prompts
+  const wallet = await core.openWallet({ ...coreOpts, passphrase: 'e2e-local' });
+  const libSend = await core.send(wallet, coreOpts, {
+    to: RETURN_ADDRESS,
+    amountSats: 500,
+    memo: 'library send',
+  });
+  check(/^[0-9a-f]{64}$/.test(libSend.txid), `library send broadcast (${libSend.txid.slice(0, 12)}…)`);
+  const libBal2 = await core.getBalance(coreOpts);
+  check(
+    libBal2.confirmedSats + libBal2.unconfirmedSats === total2 - 500 - libSend.feeSats,
+    `library balance reconciles ${total2} - 500 - ${libSend.feeSats}`,
+  );
+
+  // request + awaitPayment through the library: invoice, mock pays, detected
+  const libReq = core.createRequest(wallet, { amountSats: 1000, memo: 'lib invoice' });
+  check(libReq.uri.includes(libReq.address), 'library createRequest issues a URI for a fresh address');
+  credit(libReq.address, 1000, 0);
+  const libPaid = await core.awaitPayment(coreOpts, {
+    address: libReq.address,
+    timeoutMs: 30_000,
+    pollIntervalMs: 100,
+    memo: 'lib invoice',
+  });
+  check(libPaid.receivedSats === 1000 && !libPaid.confirmed, 'library awaitPayment sees the 0-conf payment');
+  const libHist = await core.getHistory(coreOpts, { type: 'receive', limit: 1 });
+  check(libHist[0]?.memo === 'lib invoice', 'library receive is ledgered with its memo');
 } finally {
   server.close();
   fs.rmSync(HOME, { recursive: true, force: true });
