@@ -19,5 +19,14 @@ export type {
 export type { CoreOptions } from './context.js';
 export { openWallet, CoreWallet, type OpenWalletOptions } from './wallet.js';
 export { getBalance, type BalanceResult, type AddressBalanceResult } from './balance.js';
+export {
+  planSend,
+  executeSend,
+  send,
+  explorerTxUrl,
+  type SendParams,
+  type SendPlan,
+  type SendResult,
+} from './send.js';
 export { getHistory, type HistoryParams, type MoneyMovement } from './history.js';
 export type { LedgerEntry } from '../ledger.js';

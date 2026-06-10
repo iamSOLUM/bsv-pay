@@ -93,8 +93,13 @@ export interface UnlockOptions {
   onWarning?: (text: string) => void;
 }
 
-/** Resolve the passphrase: env var for scripts, otherwise interactive prompt. */
-async function obtainPassphrase(supplied?: string | (() => Promise<string>)): Promise<string> {
+/**
+ * Resolve the passphrase: env var for scripts, otherwise interactive prompt.
+ * Exported so CLI commands can hand this exact flow to core's openWallet().
+ */
+export async function obtainPassphrase(
+  supplied?: string | (() => Promise<string>),
+): Promise<string> {
   if (typeof supplied === 'string') return supplied;
   if (typeof supplied === 'function') return supplied();
   const env = process.env.BSV_PAY_PASSPHRASE;

@@ -1,43 +1,21 @@
 import chalk from 'chalk';
 import { validateAddress } from '../address.js';
 import type { ChainProvider } from '../chain/provider.js';
-import { WhatsOnChainProvider } from '../chain/whatsonchain.js';
 import type { Ctx } from '../context.js';
+import { executeSend, explorerTxUrl, planSend } from '../core/send.js';
+import { openWallet } from '../core/wallet.js';
 import { CliError, EXIT, usageError } from '../errors.js';
-import { appendLedger } from '../ledger.js';
 import { ask, confirm, isInteractive } from '../prompt.js';
-import { buildSignedTx, selectUtxos, type SpendableUtxo } from '../tx.js';
 import { formatSats, parseAmount } from '../units.js';
-import { Wallet } from '../wallet/wallet.js';
+import { obtainPassphrase } from '../wallet/wallet.js';
+
+export { explorerTxUrl };
 
 export interface SendOptions {
   yes?: boolean;
   allowLarge?: boolean;
   dryRun?: boolean;
   confirmedOnly?: boolean;
-}
-
-export function explorerTxUrl(network: 'main' | 'test', txid: string): string {
-  return network === 'test'
-    ? `https://test.whatsonchain.com/tx/${txid}`
-    : `https://whatsonchain.com/tx/${txid}`;
-}
-
-async function gatherSpendableUtxos(
-  wallet: Wallet,
-  chain: ChainProvider,
-  confirmedOnly: boolean,
-): Promise<SpendableUtxo[]> {
-  const utxos: SpendableUtxo[] = [];
-  for (const tracked of wallet.trackedAddresses()) {
-    const rows = await chain.getUtxos(tracked.address);
-    for (const u of rows) {
-      // spend unconfirmed change by default; --confirmed-only restricts
-      if (confirmedOnly && (u.height === undefined || u.height <= 0)) continue;
-      utxos.push({ ...u, address: tracked.address });
-    }
-  }
-  return utxos;
 }
 
 /**
@@ -86,22 +64,29 @@ export async function cmdSend(
   opts: SendOptions,
   provider?: ChainProvider,
 ): Promise<void> {
-  const chain = provider ?? new WhatsOnChainProvider(ctx.network);
-
   // 1. Validate everything local BEFORE unlocking or touching the network
   //    (invariant 4): address, amount, then the spend limit — a script that
   //    is over the limit fails fast with exit 8, not after network calls.
   validateAddress(address, ctx.network);
   const amountSats = parseAmount(amountArg);
   await enforceSpendLimit(ctx, amountSats, opts);
-  const wallet = await Wallet.unlock(ctx.network);
 
-  // 2. Gather funds and plan the transaction.
-  const utxos = await gatherSpendableUtxos(wallet, chain, Boolean(opts.confirmedOnly));
-  const selection = selectUtxos(utxos, amountSats, ctx.config.feeRateSatsPerKb);
-  const totalAvailable = utxos.reduce((s, u) => s + u.satoshis, 0);
-  const balanceAfter = totalAvailable - amountSats - selection.fee;
-  const change = wallet.peekAddress('change');
+  const core = { network: ctx.network, config: ctx.config, provider };
+  const wallet = await openWallet({
+    ...core,
+    passphrase: () => obtainPassphrase(), // env var, then interactive prompt
+    onWarning: (text) => process.stderr.write(text + '\n'),
+  });
+
+  // 2. Gather funds and plan the transaction. The CLI enforced its limit
+  //    above (interactively when needed), so the core guard is satisfied.
+  const plan = await planSend(wallet, core, {
+    to: address,
+    amountSats,
+    memo,
+    confirmedOnly: opts.confirmedOnly,
+    allowAboveLimit: true,
+  });
 
   // 3. Per-send confirmation (always shows recipient, amount, fee, and
   //    resulting balance before broadcast).
@@ -111,8 +96,8 @@ export async function cmdSend(
   const summaryLines = [
     `  Recipient:        ${address}`,
     `  Amount:           ${formatSats(amountSats)}`,
-    `  Fee:              ${selection.fee} sats (${ctx.config.feeRateSatsPerKb} sats/KB, ${selection.selected.length} input${selection.selected.length === 1 ? '' : 's'})`,
-    `  Balance after:    ${formatSats(balanceAfter)}`,
+    `  Fee:              ${plan.feeSats} sats (${ctx.config.feeRateSatsPerKb} sats/KB, ${plan.inputCount} input${plan.inputCount === 1 ? '' : 's'})`,
+    `  Balance after:    ${formatSats(plan.balanceAfterSats)}`,
   ];
   if (memo) summaryLines.push(`  Memo (local):     ${memo}`);
   for (const line of summaryLines) process.stderr.write(line + '\n');
@@ -129,85 +114,38 @@ export async function cmdSend(
     }
   }
 
-  // 4. Build + sign.
-  const tx = await buildSignedTx(wallet, selection, address, amountSats, change.address);
-  const txid = tx.id('hex');
+  // 4. Sign, broadcast, and record via core (ledger writes live there).
+  const result = await executeSend(wallet, core, plan, { dryRun: opts.dryRun });
 
-  if (opts.dryRun) {
+  if (result.dryRun) {
     ctx.out.info(chalk.bold('Dry run complete (not broadcast).'));
-    ctx.out.info(`  Txid (if sent):   ${txid}`);
-    ctx.out.info(`  Size:             ${tx.toHex().length / 2} bytes`);
+    ctx.out.info(`  Txid (if sent):   ${result.txid}`);
+    ctx.out.info(`  Size:             ${result.sizeBytes} bytes`);
     ctx.out.result({
       ok: true,
       dry_run: true,
-      txid,
+      txid: result.txid,
       recipient: address,
-      amount_sats: amountSats,
-      fee_sats: selection.fee,
-      change_sats: selection.changeSats,
-      balance_after_sats: balanceAfter,
+      amount_sats: result.amountSats,
+      fee_sats: result.feeSats,
+      change_sats: result.changeSats,
+      balance_after_sats: result.balanceAfterSats,
     });
     return;
   }
 
-  // 5. Persist the change address only on a real broadcast path.
-  if (selection.changeSats > 0) wallet.issueAddress('change', `change for ${txid.slice(0, 12)}`);
-
-  try {
-    const result = await chain.broadcast(tx.toHex());
-    if (!result.ok) {
-      throw new CliError(
-        EXIT.BROADCAST_REJECTED,
-        'broadcast_rejected',
-        `The network rejected the transaction: ${result.error ?? 'no reason given'}. ` +
-          'Nothing was spent. Check the fee rate in config.toml or retry shortly.',
-        { txid },
-      );
-    }
-  } catch (e) {
-    if (e instanceof CliError && e.exitCode === EXIT.BROADCAST_REJECTED) throw e;
-    // Ambiguous network failure: the tx may have propagated. Exit 6, still print txid.
-    appendLedger(ctx.network, {
-      type: 'send',
-      txid,
-      amount_sats: amountSats,
-      address,
-      memo,
-      timestamp: new Date().toISOString(),
-      status: 'unknown',
-      fee_sats: selection.fee,
-    });
-    throw new CliError(
-      EXIT.BROADCAST_UNKNOWN,
-      'broadcast_status_unknown',
-      `Broadcast status unknown (network failure mid-send). txid ${txid} — check ${explorerTxUrl(ctx.network, txid)} before retrying; the funds may already have moved.`,
-      { txid, explorer_url: explorerTxUrl(ctx.network, txid) },
-    );
-  }
-
-  appendLedger(ctx.network, {
-    type: 'send',
-    txid,
-    amount_sats: amountSats,
-    address,
-    memo,
-    timestamp: new Date().toISOString(),
-    status: 'pending',
-    fee_sats: selection.fee,
-  });
-
   ctx.out.info(chalk.green('Sent.'));
-  ctx.out.info(`  Txid:           ${txid}`);
-  ctx.out.info(`  Explorer:       ${explorerTxUrl(ctx.network, txid)}`);
-  ctx.out.info(`  New balance:    ~${formatSats(balanceAfter)} (pending confirmation)`);
+  ctx.out.info(`  Txid:           ${result.txid}`);
+  ctx.out.info(`  Explorer:       ${result.explorerUrl}`);
+  ctx.out.info(`  New balance:    ~${formatSats(result.balanceAfterSats)} (pending confirmation)`);
   ctx.out.result({
     ok: true,
-    txid,
+    txid: result.txid,
     recipient: address,
-    amount_sats: amountSats,
-    fee_sats: selection.fee,
-    change_sats: selection.changeSats,
-    balance_after_sats: balanceAfter,
-    explorer_url: explorerTxUrl(ctx.network, txid),
+    amount_sats: result.amountSats,
+    fee_sats: result.feeSats,
+    change_sats: result.changeSats,
+    balance_after_sats: result.balanceAfterSats,
+    explorer_url: result.explorerUrl,
   });
 }
