@@ -18,3 +18,6 @@ export type {
 } from '../chain/provider.js';
 export type { CoreOptions } from './context.js';
 export { openWallet, CoreWallet, type OpenWalletOptions } from './wallet.js';
+export { getBalance, type BalanceResult, type AddressBalanceResult } from './balance.js';
+export { getHistory, type HistoryParams, type MoneyMovement } from './history.js';
+export type { LedgerEntry } from '../ledger.js';
