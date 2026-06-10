@@ -29,4 +29,13 @@ export {
   type SendResult,
 } from './send.js';
 export { getHistory, type HistoryParams, type MoneyMovement } from './history.js';
+export {
+  createRequest,
+  awaitPayment,
+  buildPaymentUri,
+  type RequestParams,
+  type RequestResult,
+  type AwaitPaymentParams,
+  type PaymentResult,
+} from './request.js';
 export type { LedgerEntry } from '../ledger.js';
