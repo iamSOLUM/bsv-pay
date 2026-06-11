@@ -9,6 +9,13 @@ import { cmdSend, type SendOptions } from './commands/send.js';
 import { cmdRequest, type RequestOptions } from './commands/request.js';
 import { cmdWatch } from './commands/watch.js';
 import { cmdDonate, type DonateOptions } from './commands/donate.js';
+import { cmdPolicyShow, cmdPolicyTest } from './commands/policy.js';
+import {
+  cmdApprovalsApprove,
+  cmdApprovalsList,
+  cmdApprovalsReject,
+  cmdApprovalsSetSecret,
+} from './commands/approvals.js';
 
 const program = new Command();
 
@@ -103,6 +110,46 @@ program
   .action(
     run<[string | undefined, DonateOptions]>((ctx, amount, opts) => cmdDonate(ctx, amount, opts)),
   );
+
+const policy = program
+  .command('policy')
+  .description('Inspect and dry-run the spend policy (~/.bsv-pay/policy.toml)');
+policy
+  .command('show')
+  .description('Show active policy rules, current budget usage, and pending approvals')
+  .action(run((ctx) => Promise.resolve(cmdPolicyShow(ctx))));
+policy
+  .command('test')
+  .description('Dry-run a policy decision: exit 0 allow, 8 deny, 9 would-queue')
+  .argument('<address>', 'recipient BSV address')
+  .argument('<amount>', 'amount: bare satoshis, Nsats, or Nbsv')
+  .action(
+    run<[string, string]>((ctx, address, amount) =>
+      Promise.resolve(cmdPolicyTest(ctx, address, amount)),
+    ),
+  );
+
+const approvals = program
+  .command('approvals')
+  .description('Review and resolve payments queued by approval_threshold_sats');
+approvals
+  .command('list')
+  .description('List payments waiting for human approval')
+  .action(run((ctx) => Promise.resolve(cmdApprovalsList(ctx))));
+approvals
+  .command('approve')
+  .description('Approve and send a queued payment (interactive: approval secret required)')
+  .argument('<id>', 'approval id (or unambiguous prefix) from "approvals list"')
+  .action(run<[string]>((ctx, id) => cmdApprovalsApprove(ctx, id)));
+approvals
+  .command('reject')
+  .description('Reject a queued payment (interactive: approval secret required)')
+  .argument('<id>', 'approval id (or unambiguous prefix) from "approvals list"')
+  .action(run<[string]>((ctx, id) => cmdApprovalsReject(ctx, id)));
+approvals
+  .command('set-secret')
+  .description('Set or change the human approval secret (interactive only, by design)')
+  .action(run((ctx) => cmdApprovalsSetSecret(ctx)));
 
 program.exitOverride();
 
