@@ -30,6 +30,11 @@ export {
 } from './send.js';
 export { getHistory, type HistoryParams, type MoneyMovement } from './history.js';
 export {
+  getPolicyStatus,
+  type PolicyStatusResult,
+  type PendingApprovalStatus,
+} from './policy-status.js';
+export {
   createRequest,
   awaitPayment,
   buildPaymentUri,
