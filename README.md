@@ -92,11 +92,67 @@ Sends a donation (default 10,000 sats) to the project donation address
 (`131CswxfV8Swi8zUSc3XfH9tEJLxzxmpa4`). On testnet the address is still a
 placeholder — the command warns; use `--dry-run` there.
 
+### `bsv-pay policy show` / `bsv-pay policy test <address> <amount>`
+
+`show` prints the active policy, live budget usage, and pending approvals.
+`test` dry-runs a decision without sending or recording anything:
+exit 0 = would allow, 8 = would deny, 9 = would queue for approval.
+
+### `bsv-pay approvals list|approve <id>|reject <id>|set-secret`
+
+Reviews and resolves payments queued by `approval_threshold_sats`.
+`approve`, `reject`, and `set-secret` are **interactive only**: they require
+a real terminal and the approval secret. There is deliberately no flag or
+environment variable for the secret — see the policy section below.
+
 ## Amounts
 
 Bare numbers are **satoshis**. Suffixes `sats` and `bsv` are accepted:
 `5000`, `5000sats`, `0.0001bsv`. Anything ambiguous (`5,000`, `1e3`,
 fractional sats) is an error — bsv-pay never guesses.
+
+## Policy engine — `~/.bsv-pay/policy.toml`
+
+Budgets and rules that sit **below** every spend path — CLI, library, and
+(soon) MCP tools. No flag, parameter, or tool argument can cross a
+policy.toml rule; only editing the file (and restarting any long-running
+process) changes limits. Without a policy.toml nothing changes: only the
+legacy `spend_limit_sats` confirm threshold from config.toml applies.
+
+```toml
+per_tx_limit_sats = 50000        # HARD cap per transaction (no --allow-large escape)
+daily_budget_sats = 200000       # rolling 24h total, recomputed from the ledger
+session_budget_sats = 100000     # per long-running process (e.g. an MCP server)
+rate_limit_per_minute = 6        # max payments per minute
+rate_limit_per_hour = 60         # and per hour
+approval_threshold_sats = 25000  # at/above this, queue for human approval (exit 9)
+allowlist = []                   # when non-empty, ONLY these recipients
+denylist = []                    # always wins
+
+[network.test]                   # optional per-network overrides
+daily_budget_sats = 1000000
+```
+
+- Every decision — allow, deny, or queue — is appended to the ledger with
+  the rule and reason. Denials exit 8 with a machine-readable `error`
+  (`daily_budget_exceeded`, `recipient_denied`, …) and useful numbers
+  (`remaining_sats`) so scripts and agents can adapt instead of retrying.
+- Daily budgets and rate limits are recomputed from the append-only ledger
+  at every decision — restarting a process never resets them. Unknown-status
+  broadcasts count as spent. Typos in policy.toml are hard errors, never
+  silently ignored.
+- **Approvals**: a queued payment is sent only after a human runs
+  `bsv-pay approvals approve <id>` and types the **approval secret** — a
+  second secret, separate from the wallet passphrase, stored only as an
+  argon2id hash. An agent holding `BSV_PAY_PASSPHRASE` cannot approve its
+  own payment: the wallet passphrase is not accepted, and there is no
+  non-interactive path. Approval re-checks every rule against today's
+  ledger — it satisfies the threshold, never the budgets.
+- **Threat model, honestly**: the policy engine governs anything that spends
+  *through* bsv-pay. An actor with write access to `~/.bsv-pay` (or
+  arbitrary code plus your passphrase) can bypass any local tool — so don't
+  give agents the passphrase. The recommended agent setup (M10) has a
+  server hold the unlocked wallet while the agent gets only budgeted tools.
 
 ## Exit codes (stable)
 
@@ -109,8 +165,9 @@ fractional sats) is an error — bsv-pay never guesses.
 | 4 | Network/API error (after one automatic retry) — also `--wait` timeout |
 | 5 | Broadcast rejected by the network |
 | 6 | Broadcast sent but status unknown (txid is still printed — check before retrying) |
-| 7 | Wallet locked / bad passphrase |
-| 8 | Spend limit exceeded |
+| 7 | Wallet locked / bad passphrase (also: wrong approval secret) |
+| 8 | Spend limit exceeded / denied by policy (`error` says which rule) |
+| 9 | Queued for human approval (`approval_id` in `--json`; see `bsv-pay approvals`) |
 
 ## Scripting
 

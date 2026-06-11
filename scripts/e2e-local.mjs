@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
-import { Transaction, Utils } from '@bsv/sdk';
+import { PrivateKey, Transaction, Utils } from '@bsv/sdk';
 
 const CLI = path.resolve(import.meta.dirname, '../dist/cli.js');
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bsv-pay-e2e-local-'));
@@ -267,6 +267,77 @@ try {
   check(libPaid.receivedSats === 1000 && !libPaid.confirmed, 'library awaitPayment sees the 0-conf payment');
   const libHist = await core.getHistory(coreOpts, { type: 'receive', limit: 1 });
   check(libHist[0]?.memo === 'lib invoice', 'library receive is ledgered with its memo');
+
+  // 8. M9 policy engine over the real CLI: allow, deny (budget / hard limit /
+  //    denylist), queue (exit 9), approvals list, policy show/test.
+  //    The interactive approve/reject path needs a human at a TTY by design —
+  //    it is covered by unit tests (test/approvals.test.ts) and the manual
+  //    checkpoint demo, never automated here.
+  console.error('[8/8] policy engine governs the CLI');
+  // spent so far today: 9000 (CLI leg) + 500 (library leg) = 9500 sats
+  const DENIED_ADDRESS = PrivateKey.fromRandom().toAddress('testnet');
+  fs.writeFileSync(path.join(HOME, 'policy.toml'), [
+    'per_tx_limit_sats = 8000',
+    'daily_budget_sats = 11000',
+    'approval_threshold_sats = 1000',
+    `denylist = ["${DENIED_ADDRESS}"]`,
+    '',
+  ].join('\n'));
+
+  const policyShow = await cli(['policy', 'show']);
+  check(policyShow.objects[0].source === 'file' && policyShow.objects[0].rules.per_tx_limit_sats === 8000, 'policy show reads the file');
+
+  const ledgerEntries = () =>
+    fs.readFileSync(path.join(HOME, 'ledger-testnet.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+
+  // allowed: small send within everything
+  const bal3 = (await cli(['balance'])).objects[0];
+  const total3 = bal3.confirmed_sats + bal3.unconfirmed_sats;
+  const sendA = (await cli(['send', RETURN_ADDRESS, '200', 'within policy', '--yes'])).objects[0];
+  check(sendA.ok === true, 'send within policy is allowed');
+  check(
+    ledgerEntries().some((e) => e.type === 'policy_decision' && e.decision === 'allow' && e.amount_sats === 200),
+    'allow decision is in the ledger',
+  );
+
+  // denied: daily budget (9700 spent, 1300 left, asks for 2000)
+  const deniedBudget = (await cli(['send', RETURN_ADDRESS, '2000', '--yes'], { allowExit: [8] })).objects[0];
+  check(deniedBudget.error === 'daily_budget_exceeded' && deniedBudget.remaining_sats === 1300, 'over-budget send denied with exit 8 + remaining_sats');
+  check(
+    ledgerEntries().some((e) => e.type === 'policy_decision' && e.decision === 'deny' && e.rule === 'daily_budget_sats'),
+    'deny decision is in the ledger with its rule',
+  );
+
+  // denied: hard per-tx limit ignores --allow-large
+  const deniedHard = (await cli(['send', RETURN_ADDRESS, '9000', '--yes', '--allow-large'], { allowExit: [8] })).objects[0];
+  check(deniedHard.error === 'per_tx_limit_exceeded', 'hard per-tx limit denies even --allow-large');
+
+  // denied: denylist
+  const deniedList = (await cli(['send', DENIED_ADDRESS, '100', '--yes'], { allowExit: [8] })).objects[0];
+  check(deniedList.error === 'recipient_denied', 'denylisted recipient is denied');
+
+  // queued: at/above the approval threshold, within budget -> exit 9
+  const queued = (await cli(['send', RETURN_ADDRESS, '1200', 'needs human', '--yes'], { allowExit: [9] })).objects[0];
+  check(queued.error === 'pending_approval' && typeof queued.approval_id === 'string', 'large send queues with exit 9 + approval_id');
+  const approvalsList = (await cli(['approvals', 'list'])).objects[0];
+  check(
+    approvalsList.approvals.length === 1 && approvalsList.approvals[0].amount_sats === 1200 && approvalsList.approvals[0].id === queued.approval_id,
+    'approvals list shows the queued payment',
+  );
+
+  // policy test: dry-run decisions with the right exit codes, persisting nothing
+  const entriesBefore = ledgerEntries().length;
+  check((await cli(['policy', 'test', RETURN_ADDRESS, '100'])).status === 0, 'policy test: would allow -> exit 0');
+  check((await cli(['policy', 'test', RETURN_ADDRESS, '5000'], { allowExit: [8] })).status === 8, 'policy test: would deny -> exit 8');
+  check((await cli(['policy', 'test', RETURN_ADDRESS, '1200'], { allowExit: [9] })).status === 9, 'policy test: would queue -> exit 9');
+  check(ledgerEntries().length === entriesBefore, 'policy test persisted nothing');
+
+  // nothing denied or queued moved any money
+  const bal4 = (await cli(['balance'])).objects[0];
+  check(
+    bal4.confirmed_sats + bal4.unconfirmed_sats === total3 - 200 - sendA.fee_sats,
+    'balance moved only by the one allowed send',
+  );
 } finally {
   server.close();
   fs.rmSync(HOME, { recursive: true, force: true });
