@@ -3,10 +3,16 @@ import type { ChainProvider } from '../chain/provider.js';
 import { CliError, EXIT } from '../errors.js';
 import { appendLedger } from '../ledger.js';
 import type { Network } from '../paths.js';
+import { addSessionSpent } from '../policy/budget.js';
+import {
+  authorizeApprovedSpend,
+  authorizeSpend,
+  registerAuthorizedPlan,
+  takeAuthorizedPlan,
+} from '../policy/engine.js';
 import { buildSignedTx, selectUtxos, type SpendableUtxo } from '../tx.js';
-import { formatSats } from '../units.js';
 import type { Wallet } from '../wallet/wallet.js';
-import { resolveCore, type CoreOptions } from './context.js';
+import { resolveCore, type CoreOptions, type ResolvedCore } from './context.js';
 import { unwrapWallet } from './internal.js';
 import type { CoreWallet } from './wallet.js';
 
@@ -23,11 +29,16 @@ export interface SendParams {
   /** Spend only confirmed UTXOs (unconfirmed are spendable by default). */
   confirmedOnly?: boolean;
   /**
-   * Permit amounts at/above the config spend limit (the CLI sets this after
-   * its own interactive confirmation / --allow-large). Until M9's policy
-   * engine subsumes it, this mirrors the --allow-large semantic.
+   * The human confirmed the legacy soft spend limit (interactive prompt /
+   * --allow-large). Satisfies ONLY that confirmable limit — it can never
+   * cross a policy.toml rule (hard per-tx limit, budgets, lists, threshold).
    */
   allowAboveLimit?: boolean;
+  /**
+   * Authorize in evaluate-only mode: same policy verdicts, but nothing is
+   * persisted and the resulting plan can never be executed for real.
+   */
+  dryRun?: boolean;
 }
 
 /** A fully planned, not-yet-signed spend. Carries addresses and txids only. */
@@ -75,41 +86,27 @@ async function gatherSpendableUtxos(
   return utxos;
 }
 
-/**
- * Validate and plan a spend: address check, spend-limit guard, UTXO
- * selection, and fee calculation. Persists nothing. Throws code 2 (bad
- * address/amount), 8 (over the spend limit without allowAboveLimit), or
- * 3 (insufficient funds).
- */
-export async function planSend(
-  wallet: CoreWallet,
-  opts: CoreOptions,
-  params: SendParams,
-): Promise<SendPlan> {
-  const { network, config, provider } = resolveCore(opts);
-  validateAddress(params.to, network);
-  if (!Number.isSafeInteger(params.amountSats) || params.amountSats <= 0) {
+function validateSpendInput(to: string, amountSats: number, network: Network): void {
+  validateAddress(to, network);
+  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
     throw new CliError(
       EXIT.USAGE,
       'invalid_amount',
-      `amountSats must be a positive integer of satoshis (got ${params.amountSats}).`,
+      `amountSats must be a positive integer of satoshis (got ${amountSats}).`,
     );
   }
-  if (params.amountSats >= config.spendLimitSats && !params.allowAboveLimit) {
-    throw new CliError(
-      EXIT.SPEND_LIMIT,
-      'spend_limit_exceeded',
-      `Amount ${formatSats(params.amountSats)} is at/above the ${formatSats(config.spendLimitSats)} per-transaction limit. ` +
-        'Pass allowAboveLimit, or raise spend_limit_sats in config.toml.',
-      { limit_sats: config.spendLimitSats, amount_sats: params.amountSats },
-    );
-  }
+}
 
+/** Gather, select, and shape the plan. No policy, no persistence. */
+async function buildPlan(
+  wallet: CoreWallet,
+  resolved: ResolvedCore,
+  params: { to: string; amountSats: number; memo?: string; confirmedOnly?: boolean },
+): Promise<SendPlan> {
   const inner = unwrapWallet(wallet);
-  const utxos = await gatherSpendableUtxos(inner, provider, Boolean(params.confirmedOnly));
-  const selection = selectUtxos(utxos, params.amountSats, config.feeRateSatsPerKb);
+  const utxos = await gatherSpendableUtxos(inner, resolved.provider, Boolean(params.confirmedOnly));
+  const selection = selectUtxos(utxos, params.amountSats, resolved.config.feeRateSatsPerKb);
   const totalAvailable = utxos.reduce((s, u) => s + u.satoshis, 0);
-
   return {
     to: params.to,
     amountSats: params.amountSats,
@@ -124,11 +121,66 @@ export async function planSend(
 }
 
 /**
+ * Validate and plan a spend. The policy gate (invariant 2) runs HERE, before
+ * any network call: authorizeSpend ledgers the decision and throws exit 8 on
+ * deny or exit 9 when queued for approval; on allow the returned plan is
+ * registered as authorized for exactly this recipient and amount. Throws
+ * code 2 (bad address/amount) or 3 (insufficient funds) otherwise.
+ */
+export async function planSend(
+  wallet: CoreWallet,
+  opts: CoreOptions,
+  params: SendParams,
+): Promise<SendPlan> {
+  const resolved = resolveCore(opts);
+  validateSpendInput(params.to, params.amountSats, resolved.network);
+  const auth = authorizeSpend(
+    { network: resolved.network, config: resolved.config },
+    {
+      to: params.to,
+      amountSats: params.amountSats,
+      memo: params.memo,
+      softLimitConfirmed: params.allowAboveLimit,
+      confirmedOnly: params.confirmedOnly,
+    },
+    { mode: params.dryRun ? 'evaluate' : 'enforce' },
+  );
+  const plan = await buildPlan(wallet, resolved, params);
+  registerAuthorizedPlan(plan, auth);
+  return plan;
+}
+
+/**
+ * Plan a previously queued spend after the human passed the approval gate
+ * (TTY + approval secret). Re-runs every policy rule except the threshold.
+ * Internal: used by the approvals command, NOT exported from bsv-pay/core.
+ */
+export async function planApprovedSend(
+  wallet: CoreWallet,
+  opts: CoreOptions,
+  params: { to: string; amountSats: number; memo?: string; confirmedOnly?: boolean },
+  approvalId: string,
+): Promise<SendPlan> {
+  const resolved = resolveCore(opts);
+  validateSpendInput(params.to, params.amountSats, resolved.network);
+  const auth = authorizeApprovedSpend(
+    { network: resolved.network, config: resolved.config },
+    { to: params.to, amountSats: params.amountSats, memo: params.memo },
+    approvalId,
+  );
+  const plan = await buildPlan(wallet, resolved, params);
+  registerAuthorizedPlan(plan, auth);
+  return plan;
+}
+
+/**
  * Sign and (unless dryRun) broadcast a planned spend, recording it in the
- * ledger (invariant 6). dryRun persists nothing — no ledger entry, no
- * change-address counter bump. An ambiguous broadcast failure appends a
- * `status: "unknown"` entry and throws code 6 carrying the txid; a definite
- * rejection throws code 5 with nothing spent or recorded.
+ * ledger (invariant 6). Refuses any plan the policy gate did not authorize:
+ * hand-built, altered, already-executed, or planned with dryRun. dryRun
+ * persists nothing — no ledger entry, no change-address counter bump. An
+ * ambiguous broadcast failure appends a `status: "unknown"` entry and throws
+ * code 6 carrying the txid; a definite rejection throws code 5 with nothing
+ * spent or recorded.
  */
 export async function executeSend(
   wallet: CoreWallet,
@@ -137,6 +189,8 @@ export async function executeSend(
   exec: { dryRun?: boolean } = {},
 ): Promise<SendResult> {
   const { network, provider } = resolveCore(opts);
+  // The other half of the policy gate: no authorization, no broadcast.
+  const auth = takeAuthorizedPlan(plan, { to: plan.to, amountSats: plan.amountSats }, !exec.dryRun);
   const inner = unwrapWallet(wallet);
 
   const tx = await buildSignedTx(
@@ -186,7 +240,9 @@ export async function executeSend(
       timestamp: new Date().toISOString(),
       status: 'unknown',
       fee_sats: plan.feeSats,
+      decision_id: auth.decisionId,
     });
+    addSessionSpent(network, plan.amountSats); // may have moved: count it
     throw new CliError(
       EXIT.BROADCAST_UNKNOWN,
       'broadcast_status_unknown',
@@ -204,16 +260,18 @@ export async function executeSend(
     timestamp: new Date().toISOString(),
     status: 'pending',
     fee_sats: plan.feeSats,
+    decision_id: auth.decisionId,
   });
+  addSessionSpent(network, plan.amountSats);
   return result;
 }
 
-/** Plan and execute in one call. Never prompts; spend-limit guard applies. */
+/** Plan and execute in one call. Never prompts; the policy gate applies. */
 export async function send(
   wallet: CoreWallet,
   opts: CoreOptions,
   params: SendParams,
 ): Promise<SendResult> {
   const plan = await planSend(wallet, opts, params);
-  return executeSend(wallet, opts, plan);
+  return executeSend(wallet, opts, plan, { dryRun: params.dryRun });
 }

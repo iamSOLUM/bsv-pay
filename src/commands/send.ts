@@ -86,6 +86,7 @@ export async function cmdSend(
     memo,
     confirmedOnly: opts.confirmedOnly,
     allowAboveLimit: true,
+    dryRun: opts.dryRun,
   });
 
   // 3. Per-send confirmation (always shows recipient, amount, fee, and

@@ -108,7 +108,8 @@ export function resetPolicyCacheForTests(): void {
 }
 
 export function loadPolicy(network: Network, config: Config): Policy {
-  const cacheKey = `${baseDir()}::${network}`;
+  // spendLimitSats participates: the synthesized default policy depends on it.
+  const cacheKey = `${baseDir()}::${network}::${config.spendLimitSats}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
