@@ -14,6 +14,7 @@ import { buildSignedTx, selectUtxos, type SpendableUtxo } from '../tx.js';
 import type { Wallet } from '../wallet/wallet.js';
 import { resolveCore, type CoreOptions, type ResolvedCore } from './context.js';
 import { unwrapWallet } from './internal.js';
+import { withSpendLock } from './spend-lock.js';
 import type { CoreWallet } from './wallet.js';
 
 export function explorerTxUrl(network: Network, txid: string): string {
@@ -266,12 +267,21 @@ export async function executeSend(
   return result;
 }
 
-/** Plan and execute in one call. Never prompts; the policy gate applies. */
+/**
+ * Plan and execute in one call. Never prompts; the policy gate applies.
+ * Single-flight per state dir + network: concurrent send() calls in one
+ * process (an MCP server, a library embedder) are serialized across the
+ * whole decide→broadcast→ledger span, so a later spend is decided only
+ * after every earlier one has hit the ledger — two simultaneous spends can
+ * never both pass the same remaining budget.
+ */
 export async function send(
   wallet: CoreWallet,
   opts: CoreOptions,
   params: SendParams,
 ): Promise<SendResult> {
-  const plan = await planSend(wallet, opts, params);
-  return executeSend(wallet, opts, plan, { dryRun: params.dryRun });
+  return withSpendLock(opts.network, async () => {
+    const plan = await planSend(wallet, opts, params);
+    return executeSend(wallet, opts, plan, { dryRun: params.dryRun });
+  });
 }
