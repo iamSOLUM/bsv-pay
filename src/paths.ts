@@ -20,3 +20,13 @@ export function walletPath(network: Network): string {
 export function ledgerPath(network: Network): string {
   return path.join(baseDir(), network === 'test' ? 'ledger-testnet.jsonl' : 'ledger.jsonl');
 }
+
+/** One policy file for both networks (per-network overrides live inside it). */
+export function policyPath(): string {
+  return path.join(baseDir(), 'policy.toml');
+}
+
+/** Argon2id hash of the human approval secret — never the secret itself. */
+export function approvalSecretPath(): string {
+  return path.join(baseDir(), 'approval-secret.json');
+}

@@ -4,8 +4,9 @@ import { ledgerPath, type Network } from './paths.js';
 
 /**
  * Append-only local ledger (~/.bsv-pay/ledger.jsonl). Records sends,
- * receives, and issued addresses. Memos are local-only — never on-chain.
- * Never contains key material.
+ * receives, issued addresses, and (Phase 2) every policy decision and
+ * approval resolution. Memos are local-only — never on-chain.
+ * Never contains key material. Entry types are additive-only.
  */
 export type LedgerEntry =
   | {
@@ -17,6 +18,8 @@ export type LedgerEntry =
       timestamp: string;
       status: 'pending' | 'confirmed' | 'unknown';
       fee_sats?: number;
+      /** Links a send to the policy decision that authorized it (Phase 2). */
+      decision_id?: string;
     }
   | {
       type: 'address_issued';
@@ -25,6 +28,29 @@ export type LedgerEntry =
       purpose: 'receive' | 'change' | 'request';
       memo?: string;
       timestamp: string;
+    }
+  | {
+      type: 'policy_decision';
+      decision: 'allow' | 'deny' | 'queue';
+      /** Which policy rule decided, e.g. "daily_budget_sats" or "default". */
+      rule: string;
+      reason: string;
+      address: string;
+      amount_sats: number;
+      memo?: string;
+      timestamp: string;
+      decision_id: string;
+      /** Present when decision === "queue". */
+      approval_id?: string;
+      confirmed_only?: boolean;
+    }
+  | {
+      type: 'approval_resolved';
+      approval_id: string;
+      resolution: 'approved' | 'rejected';
+      timestamp: string;
+      /** Present when resolution === "approved" and the send broadcast. */
+      txid?: string;
     };
 
 export function appendLedger(network: Network, entry: LedgerEntry): void {

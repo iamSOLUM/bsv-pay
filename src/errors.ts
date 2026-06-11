@@ -9,6 +9,8 @@ export const EXIT = {
   BROADCAST_UNKNOWN: 6,
   WALLET_LOCKED: 7,
   SPEND_LIMIT: 8,
+  /** Phase 2: the spend was queued for human approval instead of sent. */
+  PENDING_APPROVAL: 9,
 } as const;
 
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
