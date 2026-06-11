@@ -9,6 +9,7 @@ import { cmdSend, type SendOptions } from './commands/send.js';
 import { cmdRequest, type RequestOptions } from './commands/request.js';
 import { cmdWatch } from './commands/watch.js';
 import { cmdDonate, type DonateOptions } from './commands/donate.js';
+import { cmdMcp } from './commands/mcp.js';
 import { cmdPolicyShow, cmdPolicyTest } from './commands/policy.js';
 import {
   cmdApprovalsApprove,
@@ -110,6 +111,13 @@ program
   .action(
     run<[string | undefined, DonateOptions]>((ctx, amount, opts) => cmdDonate(ctx, amount, opts)),
   );
+
+program
+  .command('mcp')
+  .description(
+    'Serve MCP tools over stdio for AI agents (wallet unlocks at start; policy enforced in core)',
+  )
+  .action(run((ctx) => cmdMcp(ctx)));
 
 const policy = program
   .command('policy')

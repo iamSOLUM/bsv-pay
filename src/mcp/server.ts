@@ -1,0 +1,297 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
+import type { ChainProvider } from '../chain/provider.js';
+import type { Config } from '../config.js';
+import { CliError } from '../errors.js';
+import type { Network } from '../paths.js';
+import { getBalance } from '../core/balance.js';
+import { getHistory } from '../core/history.js';
+import { getPolicyStatus } from '../core/policy-status.js';
+import type { CoreWallet } from '../core/wallet.js';
+
+/**
+ * The bsv-pay MCP server: tools over the core library, nothing else. The
+ * wallet is unlocked BEFORE this server is built (env passphrase or TTY
+ * prompt at startup) and no tool can unlock, lock, or export anything —
+ * the agent on the other end of the transport never holds a secret. All
+ * spending goes through core, where the policy gate and the single-flight
+ * spend lock live; this module cannot reach the network or a key directly.
+ *
+ * Results contract (stable, additive-only once shipped): every tool returns
+ * structuredContent with `ok: true | false`. Expected failures — policy
+ * denials, queued approvals, insufficient funds — are RESULTS with stable
+ * snake_case `error` codes and the engine's data fields (remaining_sats,
+ * approval_id, ...), never protocol errors, so an agent can read them and
+ * adapt. Only unexpected exceptions surface as isError tool results.
+ */
+
+export interface McpServerOptions {
+  network: Network;
+  wallet: CoreWallet;
+  config?: Partial<Config>;
+  /** Tests inject a mock; production uses the default (WhatsOnChain). */
+  provider?: ChainProvider;
+}
+
+export const MCP_SERVER_VERSION = '0.1.0';
+
+/** Fields shared by every tool result. */
+const ENVELOPE = {
+  ok: z.boolean().describe('True when the call succeeded; false carries error + message.'),
+  code: z
+    .number()
+    .int()
+    .optional()
+    .describe('Stable bsv-pay error number (same meanings as the CLI exit codes).'),
+  error: z
+    .string()
+    .optional()
+    .describe('Stable snake_case error code, e.g. "daily_budget_exceeded".'),
+  message: z.string().optional().describe('Human-readable explanation when ok is false.'),
+};
+
+function asResult(structured: Record<string, unknown>): CallToolResult {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(structured) }],
+    structuredContent: structured,
+  };
+}
+
+/**
+ * Run a tool body; map CliError (typed, stable-coded, key-free by
+ * invariant 1) to a structured ok:false result. Anything else is a bug —
+ * rethrow and let the SDK report it as a generic tool error.
+ */
+async function guard(
+  fn: () => Promise<Record<string, unknown>> | Record<string, unknown>,
+): Promise<CallToolResult> {
+  try {
+    return asResult({ ok: true, ...(await fn()) });
+  } catch (e) {
+    if (e instanceof CliError) {
+      return asResult({
+        ok: false,
+        code: e.exitCode,
+        error: e.errorCode,
+        message: e.message,
+        ...(e.data ?? {}),
+      });
+    }
+    throw e;
+  }
+}
+
+export function buildMcpServer(opts: McpServerOptions): McpServer {
+  const core = { network: opts.network, config: opts.config, provider: opts.provider };
+  const networkLabel = opts.network === 'test' ? 'BSV testnet' : 'BSV MAINNET (real money)';
+
+  const server = new McpServer({ name: 'bsv-pay', version: MCP_SERVER_VERSION });
+
+  server.registerTool(
+    'get_balance',
+    {
+      title: 'Get wallet balance',
+      description:
+        `Check this wallet's balance on ${networkLabel}. All amounts are satoshis ` +
+        '(1 BSV = 100,000,000 satoshis). Returns confirmed and unconfirmed totals ' +
+        'across every address the wallet tracks. Note that spending is governed by ' +
+        'a human-set policy, so the spendable amount may be lower than the balance — ' +
+        'use get_policy_status to see the actual allowance.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {},
+      outputSchema: {
+        ...ENVELOPE,
+        network: z.enum(['main', 'test']).optional(),
+        confirmed_sats: z.number().int().optional(),
+        unconfirmed_sats: z.number().int().optional(),
+        total_sats: z.number().int().optional(),
+        addresses_tracked: z.number().int().optional(),
+      },
+    },
+    () =>
+      guard(async () => {
+        const balance = await getBalance(core);
+        return {
+          network: opts.network,
+          confirmed_sats: balance.confirmedSats,
+          unconfirmed_sats: balance.unconfirmedSats,
+          total_sats: balance.confirmedSats + balance.unconfirmedSats,
+          addresses_tracked: balance.addresses.length,
+        };
+      }),
+  );
+
+  server.registerTool(
+    'get_history',
+    {
+      title: 'Get payment history',
+      description:
+        'List payments this wallet has sent and received, newest first, from the ' +
+        'local append-only ledger (fast, offline, includes local-only memos). ' +
+        'All amounts are satoshis.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .optional()
+          .describe('Maximum entries to return (default 20).'),
+        type: z
+          .enum(['send', 'receive'])
+          .optional()
+          .describe('Only sends or only receives; default both.'),
+      },
+      outputSchema: {
+        ...ENVELOPE,
+        network: z.enum(['main', 'test']).optional(),
+        count: z.number().int().optional(),
+        payments: z
+          .array(
+            z.object({
+              type: z.enum(['send', 'receive']),
+              txid: z.string(),
+              amount_sats: z.number().int(),
+              address: z.string(),
+              memo: z.string().optional(),
+              timestamp: z.string(),
+              status: z.enum(['pending', 'confirmed', 'unknown']),
+              fee_sats: z.number().int().optional(),
+              decision_id: z
+                .string()
+                .optional()
+                .describe('Links a send to the policy decision that authorized it.'),
+            }),
+          )
+          .optional(),
+      },
+    },
+    (args: { limit?: number; type?: 'send' | 'receive' }) =>
+      guard(() => {
+        const payments = getHistory(core, { limit: args.limit ?? 20, type: args.type });
+        return { network: opts.network, count: payments.length, payments };
+      }),
+  );
+
+  server.registerTool(
+    'get_policy_status',
+    {
+      title: 'Get spending policy status',
+      description:
+        'Check the human-set spending policy: per-transaction limits, remaining ' +
+        'daily/session budgets, rate-limit headroom, allow/denylists, and payments ' +
+        'queued for human approval. All amounts are satoshis. Call this BEFORE ' +
+        'paying and plan within the remaining allowance — payments outside policy ' +
+        'are refused, the policy cannot be changed or bypassed from this server, ' +
+        'and BSV payments are irreversible once sent.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {},
+      outputSchema: {
+        ...ENVELOPE,
+        network: z.enum(['main', 'test']).optional(),
+        source: z
+          .enum(['defaults', 'file'])
+          .optional()
+          .describe('"file" when ~/.bsv-pay/policy.toml governs; "defaults" otherwise.'),
+        per_tx_limit_sats: z
+          .number()
+          .int()
+          .optional()
+          .describe('Hard cap per payment. Absent = no hard cap.'),
+        soft_spend_limit_sats: z
+          .number()
+          .int()
+          .optional()
+          .describe('Legacy per-payment limit; payments at/above it are refused here.'),
+        daily_budget_sats: z.number().int().optional(),
+        daily_remaining_sats: z
+          .number()
+          .int()
+          .optional()
+          .describe('What may still be spent in the rolling 24h window.'),
+        session_budget_sats: z.number().int().optional(),
+        session_remaining_sats: z
+          .number()
+          .int()
+          .optional()
+          .describe('What may still be spent before this server restarts.'),
+        rate_limit_per_minute: z.number().int().optional(),
+        remaining_this_minute: z.number().int().optional(),
+        rate_limit_per_hour: z.number().int().optional(),
+        remaining_this_hour: z.number().int().optional(),
+        approval_threshold_sats: z
+          .number()
+          .int()
+          .optional()
+          .describe('Payments at/above this queue for human approval instead of sending.'),
+        approval_secret_configured: z.boolean().optional(),
+        allowlist: z
+          .array(z.string())
+          .optional()
+          .describe('When non-empty, ONLY these addresses may be paid.'),
+        denylist: z.array(z.string()).optional().describe('These addresses are never paid.'),
+        usage: z
+          .object({
+            daily_spent_sats: z.number().int(),
+            session_spent_sats: z.number().int(),
+            sends_last_minute: z.number().int(),
+            sends_last_hour: z.number().int(),
+          })
+          .optional(),
+        pending_approvals: z
+          .array(
+            z.object({
+              approval_id: z.string(),
+              address: z.string(),
+              amount_sats: z.number().int(),
+              memo: z.string().optional(),
+              confirmed_only: z.boolean().optional(),
+              queued_at: z.string(),
+            }),
+          )
+          .optional()
+          .describe('Queued payments only a human (with the approval secret) can release.'),
+      },
+    },
+    () =>
+      guard(() => {
+        const status = getPolicyStatus(core);
+        return {
+          network: status.network,
+          source: status.source,
+          per_tx_limit_sats: status.perTxLimitSats,
+          soft_spend_limit_sats: status.softPerTxLimitSats,
+          daily_budget_sats: status.dailyBudgetSats,
+          daily_remaining_sats: status.dailyRemainingSats,
+          session_budget_sats: status.sessionBudgetSats,
+          session_remaining_sats: status.sessionRemainingSats,
+          rate_limit_per_minute: status.rateLimitPerMinute,
+          remaining_this_minute: status.remainingThisMinute,
+          rate_limit_per_hour: status.rateLimitPerHour,
+          remaining_this_hour: status.remainingThisHour,
+          approval_threshold_sats: status.approvalThresholdSats,
+          approval_secret_configured: status.approvalSecretConfigured,
+          allowlist: status.allowlist,
+          denylist: status.denylist,
+          usage: {
+            daily_spent_sats: status.usage.dailySpentSats,
+            session_spent_sats: status.usage.sessionSpentSats,
+            sends_last_minute: status.usage.sendsLastMinute,
+            sends_last_hour: status.usage.sendsLastHour,
+          },
+          pending_approvals: status.pendingApprovals.map((p) => ({
+            approval_id: p.approvalId,
+            address: p.address,
+            amount_sats: p.amountSats,
+            memo: p.memo,
+            confirmed_only: p.confirmedOnly,
+            queued_at: p.queuedAt,
+          })),
+        };
+      }),
+  );
+
+  return server;
+}
