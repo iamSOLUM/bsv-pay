@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +12,14 @@ import { cmdSend } from '../src/commands/send.js';
 import { cmdDonate } from '../src/commands/donate.js';
 import { Output } from '../src/output.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
-import { openWallet, planSend, executeSend, send, type CoreWallet } from '../src/core/index.js';
+import {
+  openWallet,
+  paidFetch,
+  planSend,
+  executeSend,
+  send,
+  type CoreWallet,
+} from '../src/core/index.js';
 import type { SendPlan } from '../src/core/send.js';
 import { EXIT, type CliError } from '../src/errors.js';
 import { readLedger } from '../src/ledger.js';
@@ -31,7 +40,7 @@ import { MockChainProvider } from './mock-provider.js';
  *  3. SWEEP: a provider that rejects any broadcast lacking a prior ledgered
  *     allow decision matching the transaction's actual outputs, run across
  *     every spend-capable entry point. M10 added the MCP pay tool; M11
- *     MUST add paidFetch to this sweep.
+ *     added core paidFetch and the MCP paid_fetch tool.
  */
 
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src');
@@ -58,7 +67,13 @@ describe('static choke points: all spend I/O lives behind the gate', () => {
       pattern: /privKeyForAddress\(/,
       allowed: ['wallet/wallet.ts', 'tx.ts'],
     },
-    { name: 'raw HTTP', pattern: /\bfetch\(/, allowed: ['chain/whatsonchain.ts'] },
+    {
+      name: 'raw HTTP',
+      // http402/client.ts is the 402 payer: it may talk HTTP, but it spends
+      // only via core send() and can neither sign nor broadcast itself.
+      pattern: /\bfetch\(/,
+      allowed: ['chain/whatsonchain.ts', 'http402/client.ts'],
+    },
     {
       name: 'gate invocation',
       pattern: /authorizeSpend\(|authorizeApprovedSpend\(/,
@@ -231,7 +246,6 @@ function muteStdio(): void {
 }
 
 describe('sweep: every spend entry point broadcasts only gate-authorized transactions', () => {
-  // M11 MUST add core paidFetch here.
   it('CLI send', async () => {
     muteStdio();
     const provider = crossCheckFunded();
@@ -272,6 +286,38 @@ describe('sweep: every spend entry point broadcasts only gate-authorized transac
     });
     expect((result.structuredContent as { ok: boolean; txid?: string }).ok).toBe(true);
     expect(provider.broadcasts).toHaveLength(1);
+  });
+
+  it('core paidFetch', async () => {
+    const provider = crossCheckFunded();
+    const paywall = http.createServer((req, res) => {
+      if (!req.headers['x-bsv-payment']) {
+        res.writeHead(402, {
+          'x-bsv-payment-version': '1.0',
+          'x-bsv-payment-satoshis-required': '4000',
+          'x-bsv-payment-derivation-prefix': 'sweep-prefix',
+          'x-bsv-payment-address': RECIPIENT,
+        });
+        res.end('{"error":"payment_required"}');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('paid content');
+    });
+    await new Promise<void>((r) => paywall.listen(0, '127.0.0.1', r));
+    const port = (paywall.address() as AddressInfo).port;
+    try {
+      const result = await paidFetch(
+        wallet,
+        { network: 'main', provider },
+        { url: `http://127.0.0.1:${port}/data` },
+      );
+      expect(result.paid).toBe(true);
+      expect(result.body).toBe('paid content');
+      expect(provider.broadcasts).toHaveLength(1);
+    } finally {
+      paywall.close();
+    }
   });
 
   it('meta: the cross-check itself rejects an unledgered broadcast', async () => {

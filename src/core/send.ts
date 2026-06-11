@@ -68,6 +68,12 @@ export interface SendResult {
   sizeBytes: number;
   dryRun: boolean;
   explorerUrl: string;
+  /**
+   * The signed transaction (public data once broadcast). Carried so a
+   * BRC-105 client can present the payment to the server (M11); contains
+   * signatures and public keys, never key material.
+   */
+  rawTxHex: string;
 }
 
 async function gatherSpendableUtxos(
@@ -202,6 +208,7 @@ export async function executeSend(
     plan.changeAddress,
   );
   const txid = tx.id('hex');
+  const rawTxHex = tx.toHex();
   const result: SendResult = {
     txid,
     to: plan.to,
@@ -209,9 +216,10 @@ export async function executeSend(
     feeSats: plan.feeSats,
     changeSats: plan.changeSats,
     balanceAfterSats: plan.balanceAfterSats,
-    sizeBytes: tx.toHex().length / 2,
+    sizeBytes: rawTxHex.length / 2,
     dryRun: Boolean(exec.dryRun),
     explorerUrl: explorerTxUrl(network, txid),
+    rawTxHex,
   };
   if (exec.dryRun) return result;
 

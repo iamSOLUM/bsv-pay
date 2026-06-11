@@ -11,6 +11,8 @@ export const EXIT = {
   SPEND_LIMIT: 8,
   /** Phase 2: the spend was queued for human approval instead of sent. */
   PENDING_APPROVAL: 9,
+  /** Phase 2: a 402 payment broadcast but the server refused the content. */
+  PAYMENT_NOT_REDEEMED: 10,
 } as const;
 
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];

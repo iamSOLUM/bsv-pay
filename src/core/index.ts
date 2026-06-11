@@ -43,4 +43,10 @@ export {
   type AwaitPaymentParams,
   type PaymentResult,
 } from './request.js';
+export {
+  paidFetch,
+  type PaidFetchParams,
+  type PaidFetchResult,
+  type PaidFetchPayment,
+} from '../http402/client.js';
 export type { LedgerEntry } from '../ledger.js';
