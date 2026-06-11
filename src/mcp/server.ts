@@ -3,11 +3,13 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { ChainProvider } from '../chain/provider.js';
 import type { Config } from '../config.js';
-import { CliError } from '../errors.js';
+import { CliError, usageError } from '../errors.js';
 import type { Network } from '../paths.js';
 import { getBalance } from '../core/balance.js';
 import { getHistory } from '../core/history.js';
 import { getPolicyStatus } from '../core/policy-status.js';
+import { createRequest, awaitPayment } from '../core/request.js';
+import { send } from '../core/send.js';
 import type { CoreWallet } from '../core/wallet.js';
 
 /**
@@ -49,6 +51,38 @@ const ENVELOPE = {
     .optional()
     .describe('Stable snake_case error code, e.g. "daily_budget_exceeded".'),
   message: z.string().optional().describe('Human-readable explanation when ok is false.'),
+};
+
+/**
+ * Detail fields the policy engine attaches to refusals/queues; flattened
+ * into ok:false results so agents can plan (e.g. remaining_sats) without
+ * parsing prose. All optional: which appear depends on the deciding rule.
+ */
+const POLICY_DETAIL_FIELDS = {
+  rule: z
+    .string()
+    .optional()
+    .describe('Policy rule that decided, e.g. "daily_budget_sats" or "denylist".'),
+  address: z.string().optional(),
+  amount_sats: z.number().int().optional(),
+  limit_sats: z.number().int().optional(),
+  budget_sats: z.number().int().optional(),
+  spent_sats: z.number().int().optional(),
+  remaining_sats: z
+    .number()
+    .int()
+    .optional()
+    .describe('Satoshis still spendable under the rule that refused this payment.'),
+  threshold_sats: z.number().int().optional(),
+  approval_id: z
+    .string()
+    .optional()
+    .describe(
+      'Present when queued: only a human can release it with "bsv-pay approvals approve <id>".',
+    ),
+  limit: z.number().int().optional().describe('Rate limit ceiling (payments per window).'),
+  window: z.string().optional().describe('Rate limit window: "minute" or "hour".'),
+  sent: z.number().int().optional().describe('Payments already made in that window.'),
 };
 
 function asResult(structured: Record<string, unknown>): CallToolResult {
@@ -289,6 +323,171 @@ export function buildMcpServer(opts: McpServerOptions): McpServer {
             confirmed_only: p.confirmedOnly,
             queued_at: p.queuedAt,
           })),
+        };
+      }),
+  );
+
+  server.registerTool(
+    'pay',
+    {
+      title: 'Send a payment',
+      description:
+        `Send satoshis to an address on ${networkLabel}. IRREVERSIBLE: a broadcast ` +
+        'payment cannot be cancelled or refunded. Amounts are satoshis (1 BSV = ' +
+        '100,000,000 satoshis). Every payment is checked against the human-set ' +
+        'spending policy (per-payment limits, daily/session budgets, rate limits, ' +
+        'allow/denylists). A refused payment returns ok:false with a stable error ' +
+        'code and details such as remaining_sats — adapt to the policy (it cannot ' +
+        'be changed or bypassed from this server) instead of retrying the same ' +
+        'payment. A payment at/above the approval threshold is NOT sent: it returns ' +
+        'ok:false with error "pending_approval" and an approval_id that only a ' +
+        'human can release with "bsv-pay approvals approve <id>" — do not retry it, ' +
+        'that would queue a duplicate. Use get_policy_status first to plan within ' +
+        'the allowance.',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      inputSchema: {
+        address: z.string().describe('Recipient BSV address (must match the active network).'),
+        amount_sats: z
+          .number()
+          .int()
+          .positive()
+          .describe('Amount in satoshis. Bare integer; no BSV decimals.'),
+        memo: z
+          .string()
+          .optional()
+          .describe('Local-only note for the wallet ledger; never written on-chain.'),
+      },
+      outputSchema: {
+        ...ENVELOPE,
+        ...POLICY_DETAIL_FIELDS,
+        network: z.enum(['main', 'test']).optional(),
+        txid: z.string().optional().describe('Transaction id of the broadcast payment.'),
+        fee_sats: z.number().int().optional(),
+        change_sats: z.number().int().optional(),
+        balance_after_sats: z.number().int().optional(),
+        explorer_url: z.string().optional(),
+      },
+    },
+    (args: { address: string; amount_sats: number; memo?: string }) =>
+      guard(async () => {
+        const result = await send(opts.wallet, core, {
+          to: args.address,
+          amountSats: args.amount_sats,
+          memo: args.memo,
+        });
+        return {
+          network: opts.network,
+          txid: result.txid,
+          address: result.to,
+          amount_sats: result.amountSats,
+          fee_sats: result.feeSats,
+          change_sats: result.changeSats,
+          balance_after_sats: result.balanceAfterSats,
+          explorer_url: result.explorerUrl,
+        };
+      }),
+  );
+
+  server.registerTool(
+    'create_payment_request',
+    {
+      title: 'Create a payment request',
+      description:
+        'Request a payment INTO this wallet: issues a fresh receiving address and a ' +
+        'BIP-21 payment URI to hand to the payer. Amounts are satoshis (1 BSV = ' +
+        '100,000,000 satoshis). Costs nothing and is governed by no budget — only ' +
+        'pay (outgoing) is policy-limited. Follow up with await_payment on the ' +
+        'returned address to detect when it is paid.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        amount_sats: z
+          .number()
+          .int()
+          .positive()
+          .describe('Amount to request, in satoshis. Encoded in the returned URI.'),
+        memo: z
+          .string()
+          .optional()
+          .describe('Local-only request label; also set as the URI label for the payer.'),
+      },
+      outputSchema: {
+        ...ENVELOPE,
+        network: z.enum(['main', 'test']).optional(),
+        address: z.string().optional().describe('Fresh address issued for exactly this request.'),
+        amount_sats: z.number().int().optional(),
+        memo: z.string().optional(),
+        uri: z.string().optional().describe('BIP-21 payment URI (bitcoin:<address>?sv&amount=…).'),
+      },
+    },
+    (args: { amount_sats: number; memo?: string }) =>
+      guard(() => {
+        const request = createRequest(opts.wallet, {
+          amountSats: args.amount_sats,
+          memo: args.memo,
+        });
+        return {
+          network: request.network,
+          address: request.address,
+          amount_sats: request.amountSats,
+          memo: request.memo,
+          uri: request.uri,
+        };
+      }),
+  );
+
+  server.registerTool(
+    'await_payment',
+    {
+      title: 'Wait for an incoming payment',
+      description:
+        'Wait for the first incoming payment on an address THIS wallet issued ' +
+        '(create_payment_request first). Polls the chain until a payment is seen at ' +
+        '0-conf, then records it in the ledger and returns it; amounts are ' +
+        'satoshis. On timeout it returns ok:false with error "request_timeout" — ' +
+        'the request stays valid and calling await_payment again is safe.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        address: z.string().describe('Address returned by create_payment_request.'),
+        timeout_s: z
+          .number()
+          .int()
+          .min(1)
+          .max(600)
+          .optional()
+          .describe('Seconds to wait before giving up (default 120, max 600).'),
+      },
+      outputSchema: {
+        ...ENVELOPE,
+        network: z.enum(['main', 'test']).optional(),
+        address: z.string().optional(),
+        txid: z.string().optional(),
+        amount_sats: z.number().int().optional().describe('Satoshis received.'),
+        confirmed: z
+          .boolean()
+          .optional()
+          .describe('False = seen at 0-conf (normal for fresh payments).'),
+        timeout_ms: z.number().int().optional(),
+      },
+    },
+    (args: { address: string; timeout_s?: number }) =>
+      guard(async () => {
+        if (!opts.wallet.addresses().includes(args.address)) {
+          throw usageError(
+            'unknown_address',
+            `Address ${args.address} was not issued by this wallet. ` +
+              'Use create_payment_request and await the address it returns.',
+          );
+        }
+        const payment = await awaitPayment(core, {
+          address: args.address,
+          timeoutMs: (args.timeout_s ?? 120) * 1000,
+        });
+        return {
+          network: opts.network,
+          address: payment.address,
+          txid: payment.txid,
+          amount_sats: payment.receivedSats,
+          confirmed: payment.confirmed,
         };
       }),
   );

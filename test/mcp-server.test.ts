@@ -7,7 +7,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { Mnemonic, PrivateKey } from '@bsv/sdk';
 import { openWallet, type CoreWallet } from '../src/core/index.js';
-import { appendLedger } from '../src/ledger.js';
+import { appendLedger, readLedger } from '../src/ledger.js';
 import { buildMcpServer, type McpServerOptions } from '../src/mcp/server.js';
 import { policyPath } from '../src/paths.js';
 import { resetSessionSpentForTests } from '../src/policy/budget.js';
@@ -72,17 +72,44 @@ async function call(
   return result.structuredContent as Record<string, unknown>;
 }
 
+function fundProvider(provider: MockChainProvider, sats = 200_000): MockChainProvider {
+  provider.utxos.set(walletAddr, [
+    { txid: 'cd'.repeat(32), vout: 0, satoshis: sats, height: 800_000 },
+  ]);
+  return provider;
+}
+
+function ledgeredSpendSats(): number {
+  return readLedger('main')
+    .filter((e) => e.type === 'send')
+    .reduce((sum, e) => sum + e.amount_sats, 0);
+}
+
 describe('tool surface', () => {
-  it('exposes exactly the read-only tools (so far) with agent-facing descriptions', async () => {
+  it('exposes the six M10 tools with agent-facing descriptions', async () => {
     const { client } = await connectClient();
     const tools = (await client.listTools()).tools;
     const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual(['get_balance', 'get_history', 'get_policy_status']);
+    expect(names).toEqual([
+      'await_payment',
+      'create_payment_request',
+      'get_balance',
+      'get_history',
+      'get_policy_status',
+      'pay',
+    ]);
     for (const tool of tools) {
       // tool descriptions are prompt engineering: units must be stated
       expect(tool.description).toMatch(/satoshis/);
-      expect(tool.annotations?.readOnlyHint).toBe(true);
     }
+    const pay = tools.find((t) => t.name === 'pay')!;
+    // irreversibility and budgets must be spelled out for the LLM
+    expect(pay.description).toMatch(/IRREVERSIBLE/);
+    expect(pay.description).toMatch(/policy/);
+    expect(pay.annotations?.readOnlyHint).toBe(false);
+    expect(pay.annotations?.destructiveHint).toBe(true);
+    // there is deliberately NO tool that unlocks, approves, or edits policy
+    for (const name of names) expect(name).not.toMatch(/approve|unlock|secret|policy_set|seed/);
   });
 });
 
@@ -138,6 +165,184 @@ describe('get_history', () => {
       type: 'send',
       amount_sats: 1_001,
     });
+  });
+});
+
+describe('pay', () => {
+  it('within policy → broadcast txid; the send and the allow decision are ledgered', async () => {
+    fs.writeFileSync(policyPath(), 'daily_budget_sats = 10000');
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+    });
+
+    const paid = await call(client, 'pay', {
+      address: RECIPIENT,
+      amount_sats: 4_000,
+      memo: 'mcp test',
+    });
+    expect(paid).toMatchObject({
+      ok: true,
+      network: 'main',
+      address: RECIPIENT,
+      amount_sats: 4_000,
+    });
+    expect(typeof paid.txid).toBe('string');
+    expect(provider.broadcasts).toHaveLength(1);
+
+    const ledger = readLedger('main');
+    expect(ledger.filter((e) => e.type === 'send')).toHaveLength(1);
+    expect(
+      ledger.filter((e) => e.type === 'policy_decision' && e.decision === 'allow'),
+    ).toHaveLength(1);
+  });
+
+  it('over budget → structured denial with remaining_sats AND a ledgered deny decision', async () => {
+    fs.writeFileSync(policyPath(), 'daily_budget_sats = 3000');
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+    });
+
+    const denied = await call(client, 'pay', { address: RECIPIENT, amount_sats: 5_000 });
+    expect(denied).toMatchObject({
+      ok: false,
+      code: 8,
+      error: 'daily_budget_exceeded',
+      rule: 'daily_budget_sats',
+      budget_sats: 3_000,
+      remaining_sats: 3_000,
+      amount_sats: 5_000,
+    });
+    expect(typeof denied.message).toBe('string');
+    expect(provider.broadcasts).toHaveLength(0);
+
+    const denies = readLedger('main').filter(
+      (e) => e.type === 'policy_decision' && e.decision === 'deny',
+    );
+    expect(denies).toHaveLength(1);
+    expect(denies[0]).toMatchObject({ rule: 'daily_budget_sats', amount_sats: 5_000 });
+  });
+
+  it('denylisted recipient → recipient_denied, nothing broadcast', async () => {
+    fs.writeFileSync(policyPath(), `denylist = ["${RECIPIENT}"]`);
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+    });
+
+    const denied = await call(client, 'pay', { address: RECIPIENT, amount_sats: 1_000 });
+    expect(denied).toMatchObject({ ok: false, error: 'recipient_denied', rule: 'denylist' });
+    expect(provider.broadcasts).toHaveLength(0);
+  });
+
+  it('at/above the approval threshold → pending_approval with approval_id, not sent', async () => {
+    fs.writeFileSync(policyPath(), 'approval_threshold_sats = 5000');
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+    });
+
+    const queued = await call(client, 'pay', { address: RECIPIENT, amount_sats: 7_000 });
+    expect(queued).toMatchObject({
+      ok: false,
+      code: 9,
+      error: 'pending_approval',
+      rule: 'approval_threshold_sats',
+    });
+    expect(typeof queued.approval_id).toBe('string');
+    expect(provider.broadcasts).toHaveLength(0);
+
+    // the queue is visible to the agent via get_policy_status
+    const status = await call(client, 'get_policy_status');
+    expect(status.pending_approvals).toEqual([
+      expect.objectContaining({ approval_id: queued.approval_id, amount_sats: 7_000 }),
+    ]);
+  });
+
+  it('the soft spend limit cannot be crossed from MCP (no allow-large equivalent)', async () => {
+    // no policy.toml: the legacy confirmable limit applies; MCP is unattended
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+      config: { spendLimitSats: 2_000 },
+    });
+    const denied = await call(client, 'pay', { address: RECIPIENT, amount_sats: 2_500 });
+    expect(denied).toMatchObject({ ok: false, error: 'spend_limit_exceeded' });
+    expect(provider.broadcasts).toHaveLength(0);
+  });
+
+  it('N concurrent pays against a budget that allows only some: ledger never overshoots', async () => {
+    fs.writeFileSync(policyPath(), 'daily_budget_sats = 10000');
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        call(client, 'pay', { address: RECIPIENT, amount_sats: 4_000 }),
+      ),
+    );
+
+    const succeeded = results.filter((r) => r.ok === true);
+    const denied = results.filter((r) => r.ok === false);
+    expect(succeeded).toHaveLength(2);
+    expect(denied).toHaveLength(3);
+    for (const d of denied) {
+      expect(d.error).toBe('daily_budget_exceeded');
+      expect(d.remaining_sats).toBe(2_000);
+    }
+
+    // the owner's invariant: total ledgered spend never exceeds the budget
+    expect(ledgeredSpendSats()).toBe(8_000);
+    expect(ledgeredSpendSats()).toBeLessThanOrEqual(10_000);
+    expect(provider.broadcasts).toHaveLength(2);
+    const decisions = readLedger('main').filter((e) => e.type === 'policy_decision');
+    expect(decisions.filter((d) => d.decision === 'allow')).toHaveLength(2);
+    expect(decisions.filter((d) => d.decision === 'deny')).toHaveLength(3);
+  });
+});
+
+describe('create_payment_request + await_payment', () => {
+  it('issues a fresh address + URI, then sees the incoming payment and ledgers it', async () => {
+    const { client, provider } = await connectClient();
+
+    const request = await call(client, 'create_payment_request', {
+      amount_sats: 2_500,
+      memo: 'data purchase',
+    });
+    expect(request.ok).toBe(true);
+    expect(request.address).not.toBe(walletAddr); // fresh address per request
+    expect(request.uri).toMatch(/^bitcoin:/);
+
+    // payer pays: the mock chain now shows a UTXO on the request address
+    provider.utxos.set(request.address as string, [
+      { txid: 'ef'.repeat(32), vout: 0, satoshis: 2_500, height: 0 },
+    ]);
+    const payment = await call(client, 'await_payment', {
+      address: request.address,
+      timeout_s: 10,
+    });
+    expect(payment).toMatchObject({
+      ok: true,
+      address: request.address,
+      amount_sats: 2_500,
+      confirmed: false,
+    });
+    const receives = readLedger('main').filter((e) => e.type === 'receive');
+    expect(receives).toHaveLength(1);
+    expect(receives[0]).toMatchObject({ amount_sats: 2_500, address: request.address });
+  });
+
+  it('timeout → ok:false request_timeout (result, not protocol error); safe to retry', async () => {
+    const { client } = await connectClient();
+    const request = await call(client, 'create_payment_request', { amount_sats: 1_000 });
+    const timedOut = await call(client, 'await_payment', {
+      address: request.address,
+      timeout_s: 1,
+    });
+    expect(timedOut).toMatchObject({ ok: false, code: 4, error: 'request_timeout' });
+  });
+
+  it('refuses to await an address this wallet did not issue', async () => {
+    const { client } = await connectClient();
+    const refused = await call(client, 'await_payment', { address: RECIPIENT, timeout_s: 1 });
+    expect(refused).toMatchObject({ ok: false, error: 'unknown_address' });
   });
 });
 

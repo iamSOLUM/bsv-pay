@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Mnemonic, P2PKH, PrivateKey, Transaction, Utils } from '@bsv/sdk';
 import { cmdSend } from '../src/commands/send.js';
 import { cmdDonate } from '../src/commands/donate.js';
@@ -12,6 +14,7 @@ import { openWallet, planSend, executeSend, send, type CoreWallet } from '../src
 import type { SendPlan } from '../src/core/send.js';
 import { EXIT, type CliError } from '../src/errors.js';
 import { readLedger } from '../src/ledger.js';
+import { buildMcpServer } from '../src/mcp/server.js';
 import { resetSessionSpentForTests } from '../src/policy/budget.js';
 import { resetPolicyCacheForTests } from '../src/policy/policy.js';
 import { buildWalletFile, writeWalletFile, Wallet } from '../src/wallet/wallet.js';
@@ -27,8 +30,8 @@ import { MockChainProvider } from './mock-provider.js';
  *     hand-built, altered, dry-run-only, or already consumed.
  *  3. SWEEP: a provider that rejects any broadcast lacking a prior ledgered
  *     allow decision matching the transaction's actual outputs, run across
- *     every spend-capable entry point. M10 (MCP pay) and M11 (paidFetch)
- *     MUST add their entry points to this sweep.
+ *     every spend-capable entry point. M10 added the MCP pay tool; M11
+ *     MUST add paidFetch to this sweep.
  */
 
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src');
@@ -228,7 +231,7 @@ function muteStdio(): void {
 }
 
 describe('sweep: every spend entry point broadcasts only gate-authorized transactions', () => {
-  // M10 MUST add the MCP `pay` tool here; M11 MUST add core paidFetch.
+  // M11 MUST add core paidFetch here.
   it('CLI send', async () => {
     muteStdio();
     const provider = crossCheckFunded();
@@ -254,6 +257,20 @@ describe('sweep: every spend entry point broadcasts only gate-authorized transac
     const core = { network: 'main' as const, provider };
     const plan = await planSend(wallet, core, { to: RECIPIENT, amountSats: 2_500 });
     await executeSend(wallet, core, plan);
+    expect(provider.broadcasts).toHaveLength(1);
+  });
+
+  it('MCP pay tool', async () => {
+    const provider = crossCheckFunded();
+    const server = buildMcpServer({ network: 'main', wallet, provider });
+    const client = new Client({ name: 'sweep-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+    const result = await client.callTool({
+      name: 'pay',
+      arguments: { address: RECIPIENT, amount_sats: 5_000 },
+    });
+    expect((result.structuredContent as { ok: boolean; txid?: string }).ok).toBe(true);
     expect(provider.broadcasts).toHaveLength(1);
   });
 
