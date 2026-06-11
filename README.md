@@ -105,6 +105,15 @@ Reviews and resolves payments queued by `approval_threshold_sats`.
 a real terminal and the approval secret. There is deliberately no flag or
 environment variable for the secret — see the policy section below.
 
+### `bsv-pay mcp`
+
+Serves MCP tools over stdio for AI agents (`pay`, `create_payment_request`,
+`await_payment`, `get_balance`, `get_history`, `get_policy_status`). The
+wallet unlocks once at startup — `BSV_PAY_PASSPHRASE` or a terminal prompt —
+and there is deliberately no unlock, approve, or key tool, so the connected
+agent never holds a secret. Every `pay` goes through the same policy gate as
+the CLI. See "Using bsv-pay with Claude Code" below.
+
 ## Amounts
 
 Bare numbers are **satoshis**. Suffixes `sats` and `bsv` are accepted:
@@ -114,7 +123,7 @@ fractional sats) is an error — bsv-pay never guesses.
 ## Policy engine — `~/.bsv-pay/policy.toml`
 
 Budgets and rules that sit **below** every spend path — CLI, library, and
-(soon) MCP tools. No flag, parameter, or tool argument can cross a
+MCP tools. No flag, parameter, or tool argument can cross a
 policy.toml rule; only editing the file (and restarting any long-running
 process) changes limits. Without a policy.toml nothing changes: only the
 legacy `spend_limit_sats` confirm threshold from config.toml applies.
@@ -151,8 +160,52 @@ daily_budget_sats = 1000000
 - **Threat model, honestly**: the policy engine governs anything that spends
   *through* bsv-pay. An actor with write access to `~/.bsv-pay` (or
   arbitrary code plus your passphrase) can bypass any local tool — so don't
-  give agents the passphrase. The recommended agent setup (M10) has a
-  server hold the unlocked wallet while the agent gets only budgeted tools.
+  give agents the passphrase. The recommended agent setup is `bsv-pay mcp`:
+  the server holds the unlocked wallet while the agent gets only budgeted
+  tools.
+
+## Using bsv-pay with Claude Code
+
+```bash
+claude mcp add bsv-pay --env BSV_PAY_PASSPHRASE=your-passphrase -- bsv-pay mcp --testnet
+```
+
+The server process holds the passphrase; Claude gets six tools and nothing
+else — no unlock, no approvals, no keys, no way to raise its own limits.
+Policy edits apply on server restart (session budgets reset with the
+process; daily budgets never reset — they are recomputed from the ledger).
+
+A budget-governed session against this `~/.bsv-pay/policy.toml`:
+
+```toml
+per_tx_limit_sats = 8000
+daily_budget_sats = 12000
+approval_threshold_sats = 1500
+```
+
+The agent plans within its allowance instead of discovering limits by
+failing — and when it crosses one anyway, the refusal is a structured
+result it can read, not an opaque error:
+
+```
+get_policy_status        → { ok: true, daily_remaining_sats: 2300, pending_approvals: [], … }
+pay (800 sats)           → { ok: true, txid: "d6d818f6…", fee_sats: 12, … }
+pay (1600 sats)          → { ok: false, error: "daily_budget_exceeded", remaining_sats: 1500, … }
+pay (1500 sats)          → { ok: false, error: "pending_approval", approval_id: "8b1f42…", … }
+```
+
+That last payment was **not sent** — it is queued for you:
+
+```bash
+bsv-pay approvals list             # review what the agent wants to pay
+bsv-pay approvals approve 8b1f42   # type the approval secret to release it
+```
+
+Every decision — allowed, denied, or queued — lands in the append-only
+ledger with its rule and reason, so you can audit exactly what the agent
+did and what it tried to do. The same loop runs end-to-end in CI against a
+local mock chain (`npm run e2e:local`, step 9), so none of the above
+depends on live coins to verify.
 
 ## Exit codes (stable)
 

@@ -19,6 +19,8 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { PrivateKey, Transaction, Utils } from '@bsv/sdk';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const CLI = path.resolve(import.meta.dirname, '../dist/cli.js');
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bsv-pay-e2e-local-'));
@@ -334,10 +336,122 @@ try {
 
   // nothing denied or queued moved any money
   const bal4 = (await cli(['balance'])).objects[0];
-  check(
-    bal4.confirmed_sats + bal4.unconfirmed_sats === total3 - 200 - sendA.fee_sats,
-    'balance moved only by the one allowed send',
-  );
+  const total4 = bal4.confirmed_sats + bal4.unconfirmed_sats;
+  check(total4 === total3 - 200 - sendA.fee_sats, 'balance moved only by the one allowed send');
+
+  // 9. M10 MCP server: the REAL `bsv-pay mcp` process over stdio, driven by a
+  //    real MCP client against the same mock chain and state dir. This is the
+  //    checkpoint demo loop: check allowance -> pay -> get BLOCKED over budget
+  //    -> see the queued payment a human must approve.
+  //    Spent today so far: 9000 + 500 + 200 = 9700 sats.
+  console.error('[9/9] MCP server governs an agent session');
+  fs.writeFileSync(path.join(HOME, 'policy.toml'), [
+    'per_tx_limit_sats = 8000',
+    'daily_budget_sats = 12000',
+    'approval_threshold_sats = 1500',
+    `denylist = ["${DENIED_ADDRESS}"]`,
+    '',
+  ].join('\n'));
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [CLI, 'mcp', '--testnet'],
+    env, // BSV_PAY_PASSPHRASE in env = headless unlock at start, agent holds no secret
+    stderr: 'pipe',
+  });
+  let mcpStderr = '';
+  const mcp = new Client({ name: 'e2e-local', version: '0.0.0' });
+  await mcp.connect(transport);
+  transport.stderr?.on('data', (c) => (mcpStderr += c));
+
+  try {
+    const tools = (await mcp.listTools()).tools.map((t) => t.name).sort();
+    check(
+      tools.join(',') ===
+        'await_payment,create_payment_request,get_balance,get_history,get_policy_status,pay',
+      'six tools, no unlock/approve/secret surface',
+    );
+
+    const tool = async (name, args = {}) =>
+      (await mcp.callTool({ name, arguments: args })).structuredContent;
+
+    // agent checks its allowance first
+    const status = await tool('get_policy_status');
+    check(
+      status.ok === true && status.source === 'file' && status.daily_remaining_sats === 2300,
+      `get_policy_status: 2,300 sats of the daily budget left`,
+    );
+    check(
+      status.pending_approvals.some((p) => p.approval_id === queued.approval_id),
+      'the CLI-queued payment is visible to the agent',
+    );
+
+    // within allowance: pays
+    const mcpBal1 = await tool('get_balance');
+    const paid = await tool('pay', { address: RETURN_ADDRESS, amount_sats: 800, memo: 'mcp paid' });
+    check(paid.ok === true && /^[0-9a-f]{64}$/.test(paid.txid), `MCP pay broadcast (${paid.txid?.slice(0, 12)}…)`);
+    check(
+      ledgerEntries().some((e) => e.type === 'send' && e.amount_sats === 800 && e.txid === paid.txid),
+      'MCP send is ledgered',
+    );
+
+    // over budget: BLOCKED with a structured, agent-readable denial + ledgered deny
+    const denied = await tool('pay', { address: RETURN_ADDRESS, amount_sats: 1600 });
+    check(
+      denied.ok === false && denied.code === 8 && denied.error === 'daily_budget_exceeded' &&
+        denied.remaining_sats === 1500,
+      'over-budget MCP pay returns the structured denial (remaining_sats 1500)',
+    );
+    check(
+      ledgerEntries().some(
+        (e) => e.type === 'policy_decision' && e.decision === 'deny' && e.amount_sats === 1600,
+      ),
+      'the MCP denial is ledgered with its rule',
+    );
+
+    // denylist holds over MCP too
+    const deniedList9 = await tool('pay', { address: DENIED_ADDRESS, amount_sats: 100 });
+    check(deniedList9.ok === false && deniedList9.error === 'recipient_denied', 'denylist holds over MCP');
+
+    // at/above the threshold: queued for a HUMAN, not sent
+    const queued9 = await tool('pay', { address: RETURN_ADDRESS, amount_sats: 1500, memo: 'big one' });
+    check(
+      queued9.ok === false && queued9.code === 9 && queued9.error === 'pending_approval' &&
+        typeof queued9.approval_id === 'string',
+      'large MCP pay queues with pending_approval + approval_id',
+    );
+    const approvals9 = (await cli(['approvals', 'list'])).objects[0];
+    check(
+      approvals9.approvals.some((a) => a.id === queued9.approval_id && a.amount_sats === 1500),
+      'the human sees the agent-queued payment in approvals list',
+    );
+
+    // the receive loop: request -> payer pays -> await sees it
+    const invoice = await tool('create_payment_request', { amount_sats: 700, memo: 'mcp invoice' });
+    check(invoice.ok === true && invoice.uri.includes(invoice.address), 'MCP payment request issued');
+    credit(invoice.address, 700, 0);
+    const received = await tool('await_payment', { address: invoice.address, timeout_s: 30 });
+    check(
+      received.ok === true && received.amount_sats === 700 && received.confirmed === false,
+      'MCP await_payment sees the 0-conf payment',
+    );
+
+    // money moved only by the one allowed pay (+ the 700 received)
+    const mcpBal2 = await tool('get_balance');
+    check(
+      mcpBal2.total_sats === mcpBal1.total_sats - 800 - paid.fee_sats + 700,
+      'balance moved only by the allowed MCP pay and the receive',
+    );
+    const history = await tool('get_history', { limit: 2 });
+    check(
+      history.payments[0].type === 'receive' && history.payments[0].amount_sats === 700 &&
+        history.payments[1].type === 'send' && history.payments[1].amount_sats === 800,
+      'MCP get_history sees the session, newest first',
+    );
+  } finally {
+    await mcp.close();
+  }
+  check(mcpStderr.includes('bsv-pay MCP server ready'), 'server banner went to stderr, not stdout');
 } finally {
   server.close();
   fs.rmSync(HOME, { recursive: true, force: true });

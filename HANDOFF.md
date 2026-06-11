@@ -1,10 +1,10 @@
-# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-11)
+# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-11, post-M10 build)
 
 For a fresh session: read CLAUDE.md (invariants — they override everything), then
 AGENT-PHASE2.md (roadmap M8–M13), DECISIONS.md, this file. Run the verification
 suite once before touching code: `npm test && npm run lint && npm run format:check
-&& npm run build && npm run e2e:local` — all green at handoff (187 unit tests / 22
-files; e2e has 8 steps).
+&& npm run build && npm run e2e:local` — all green at handoff (215 unit tests / 26
+files; e2e has 9 steps).
 
 ## Done and owner-approved
 
@@ -25,40 +25,34 @@ files; e2e has 8 steps).
     path, wallet passphrase rejected, fail-closed). Self-approval attack is tested.
 - Judgment calls are all recorded in DECISIONS.md (M8 and M9 sections).
 
-## Next action: M10 — MCP server (plan first, then a HARD checkpoint)
+## Next action: the M10 HARD checkpoint — owner demo, then M11
 
-Protocol (from the owner's kickoff): write the implementation plan and WAIT for
-approval before coding. After M10 ships: STOP — the owner personally connects the
-server to Claude Code and runs a demo (check allowance → pay → get BLOCKED over
-budget → approve the queued payment) before M11 may start.
+M10 is built, tested, and committed. Per the kickoff protocol the next step is
+NOT M11: the owner personally connects the server to Claude Code and runs the
+demo — check allowance → pay → get BLOCKED over budget → approve the queued
+payment — before M11 may start. Suggested demo setup (testnet/mock only):
+`claude mcp add bsv-pay --env BSV_PAY_PASSPHRASE=… -- bsv-pay mcp --testnet`,
+with a small `policy.toml` (see the README's "Using bsv-pay with Claude Code").
 
-M10 requirements (AGENT-PHASE2.md, plus repo-specific obligations):
+What shipped (all obligations met; details in DECISIONS.md M10):
 
-- stdio MCP server (`bsv-pay mcp`) on the official `@modelcontextprotocol/sdk`
-  (record the chosen SDK version in DECISIONS.md). Tools over core: `pay`,
-  `create_payment_request`, `await_payment`, `get_balance`, `get_history`,
-  `get_policy_status` (remaining budgets, limits, pending approvals).
-- Every `pay` goes through `authorizeSpend()` — i.e. through core
-  `planSend`/`executeSend`, never around them. **Obligation: add the MCP `pay`
-  entry point as a row in the sweep in `test/policy-gate.test.ts`** (the test
-  header demands it; M11 owes the same for `paidFetch`). The static choke-point
-  scan will also fail any new file calling broadcast/signing/fetch directly —
-  that is intended; route through core, don't extend the allowlists.
-- Policy denials are structured RESULTS, not protocol errors
-  (`{ok:false, error:"daily_budget_exceeded", remaining_sats, ...}`) — the engine
-  already puts these fields on `CliError.data`; map them through.
-- Keys/seeds/passphrases never in tool results or server logs (extend the
-  key-boundary test pattern to MCP results). Wallet unlock happens at server
-  start (env passphrase or prompt), never via a tool — this is the deployment
-  story where the agent holds no secret at all.
-- Tool descriptions are prompt engineering: state units (sats), irreversibility,
-  and that budgets exist.
-- Tests: spawn the real MCP server against the local mock chain (e2e-local
-  pattern); assert an over-budget `pay` returns the structured denial AND a
-  ledgered deny decision. README gets "Using bsv-pay with Claude Code"
-  (`claude mcp add bsv-pay -- bsv-pay mcp`) + a worked budget-governed session.
-- Exit codes, `--json` shapes, MCP tool schemas: additive-only (invariant 3).
-  Manual testing on testnet/mock only — never mainnet.
+- `bsv-pay mcp` — stdio server on `@modelcontextprotocol/sdk` 1.29.0. Six tools
+  over core: `pay`, `create_payment_request`, `await_payment`, `get_balance`,
+  `get_history`, `get_policy_status`. No unlock/approve/secret/key tool exists
+  (asserted by test); unlock happens once at startup (env passphrase or TTY).
+- Every `pay` goes through core `send()` → the policy gate. The MCP entry point
+  is a row in the `test/policy-gate.test.ts` sweep (M11 still owes `paidFetch`).
+- **Owner requirement (added at plan approval): concurrent pays cannot race the
+  budget.** `core/spend-lock.ts` single-flights decide→broadcast→ledger per
+  state dir + network; `test/spend-concurrency.test.ts` (core) and the racing-
+  pays test in `test/mcp-server.test.ts` (MCP) prove ledgered spend never
+  exceeds the budget.
+- Denials/queues are structured results: `{ok:false, code, error, message,
+  ...data}` (`remaining_sats`, `approval_id`, …); `isError` only for bugs.
+- `test/mcp-key-boundary.test.ts` sweeps full wire-level results for every
+  secret representation (incl. approval-secret hash + salt).
+- e2e step [9/9] spawns the real binary over stdio and replays the checkpoint
+  demo loop. README has "Using bsv-pay with Claude Code" + the worked session.
 
 ## In-flight notes
 
