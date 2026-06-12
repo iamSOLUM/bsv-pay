@@ -40,7 +40,7 @@ export interface McpServerOptions {
   brc100?: Brc100Interface;
 }
 
-export const MCP_SERVER_VERSION = '0.1.0';
+export const MCP_SERVER_VERSION = '0.2.0';
 
 /** Fields shared by every tool result. */
 const ENVELOPE = {

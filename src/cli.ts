@@ -49,7 +49,7 @@ function run<A extends unknown[]>(fn: (ctx: Ctx, ...args: A) => Promise<void>) {
 program
   .name('bsv-pay')
   .description('Send and receive Bitcoin SV micropayments from the command line')
-  .version('0.1.0')
+  .version('0.2.0')
   .option('--json', 'machine-readable JSON output (NDJSON for watch)')
   .option('--testnet', 'use BSV testnet (state kept separate from mainnet)');
 

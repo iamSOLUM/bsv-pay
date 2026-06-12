@@ -1,11 +1,24 @@
 # bsv-pay
 
-A developer-first CLI for sending and receiving micropayments on Bitcoin SV.
-Script-friendly by design: every command supports `--json`, exit codes are
-stable and documented, and nothing on stdout ever needs human parsing.
+A developer-first CLI — and an agent payment toolkit — for sending and
+receiving micropayments on Bitcoin SV. Script-friendly by design: every
+command supports `--json`, exit codes are stable and documented, and
+nothing on stdout ever needs human parsing. Agent-safe by design: a policy
+engine sits below every spend path, agents connect over MCP without ever
+touching a key, and every decision lands in an append-only ledger.
 
 > **Hot wallet.** bsv-pay keeps an encrypted seed on your disk and talks to a
 > public API. Treat it like cash in your pocket: keep small amounts only.
+
+**Giving an AI agent a wallet?** Start with
+[Agentic payments with bsv-pay](docs/AGENTIC-PAYMENTS.md) — the threat
+model, MCP setup for Claude Code / Claude Desktop / Cursor, the 402 flow,
+and external custody. Or watch the whole thesis run in one command, no
+coins needed:
+
+```bash
+npm run demo:two-agents   # a seller, a buyer agent, and the policy that governs it
+```
 
 ## 60-second quickstart
 
