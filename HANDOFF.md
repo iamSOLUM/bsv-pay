@@ -61,7 +61,22 @@ files; e2e has 11 steps).
     balance/ledger, max-price cap, and the third fetch blocked by the daily
     budget.
 
-## M12 — BRC-100 custody: BUILT 2026-06-12, owner verification PENDING
+## M12 — BRC-100 custody: RATIFIED by the owner 2026-06-12
+
+The owner ratified the build including the AuthFetch deferral and the
+receive-side refusal under custody, and verified e2e step [11/11] green on
+their machine.
+
+**KNOWN IOU — the real-app custody pass is still owed.** The docs/BRC100.md
+walkthrough against actual external wallet software is deferred: public
+testnet faucets are currently broken (verified personally by the owner on
+2026-06-12), so a real wallet app cannot be funded. Standing consequences:
+
+1. BRC-100 mode must NOT be promoted out of `--experimental` until a human
+   has completed the real-app verification loop in docs/BRC100.md.
+2. Launch docs (the agentic-payments guide, README, CHANGELOG) must state
+   plainly that custody mode is experimental and protocol-tested against a
+   mock, pending real-app verification.
 
 Built per the owner's standing instructions, all three honored:
 
