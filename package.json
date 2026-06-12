@@ -40,6 +40,7 @@
     "test:watch": "vitest",
     "e2e:local": "npm run build && node scripts/e2e-local.mjs",
     "demo:chain": "node scripts/demo-chain.mjs",
+    "demo:two-agents": "npm run build && node examples/two-agents/run.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
