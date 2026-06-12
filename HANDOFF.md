@@ -1,4 +1,4 @@
-# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-12, M13 BUILT — publish checkpoint OPEN)
+# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-12: v0.2.0 PUBLISHED — Phase 2 closed)
 
 For a fresh session: read CLAUDE.md (invariants — they override everything), then
 AGENT-PHASE2.md (roadmap M8–M13), DECISIONS.md, this file. Run the verification
@@ -122,9 +122,28 @@ Other M12 facts a next session needs:
 - The owner has NOT yet run the manual external-wallet loop; the mock-based
   proofs are green. Offer the docs/BRC100.md walkthrough before M13 ships.
 
-## M13 — BUILT 2026-06-12; THE PUBLISH CHECKPOINT IS OPEN. NOTHING IS PUBLISHED.
+## M13 — DONE. The owner cleared the checkpoint and `bsv-pay-cli@0.2.0` IS PUBLISHED (2026-06-12).
 
-Everything up to (and deliberately excluding) `npm publish` is done:
+Publish facts a next session needs:
+
+- **Install: `npm i -g bsv-pay-cli` — the single canonical name.** The
+  planned `bsvpay` alias package was REJECTED by the registry (403: name
+  too similar to the existing `bsv-pay` package) and the owner dropped it
+  entirely — packages/bsvpay is deleted, install docs mention only
+  bsv-pay-cli. The `bsvpay` *bin* alias inside the published package
+  stays (shipped in 0.2.0; command names aren't registry names), as does
+  the `./cli` subpath export. Decision + reasoning in DECISIONS.md M13.
+- The publish ran from the owner's terminal (npm 2FA/OTP); prepublishOnly
+  gated it behind the full test suite + build. The published tarball is
+  byte-identical to the PII-audited artifact (shasum e511e8af…).
+- Git: main pushed, tag `v0.2.0` pushed. A pre-publish PII sweep of both
+  artifacts and the full git history came back clean (no machine paths,
+  usernames, hostnames, emails, or secrets in any blob ever; .mcp.json
+  was never committed). Known-public identity: the GitHub handle in
+  LICENSE/package.json/FUNDING.yml, the proton.me commit email (intrinsic
+  to git, owner accepted), and the mainnet donation address (deliberate).
+
+What M13 delivered:
 
 - **Two-agent demo**: `npm run demo:two-agents` (examples/two-agents/) — a
   real `bsv-pay serve` seller and an MCP-only scripted buyer on the mock
@@ -138,23 +157,16 @@ Everything up to (and deliberately excluding) `npm publish` is done:
   real-app verification), and the map of executable proofs.
 - **v0.2.0**: package.json + `cli --version` + MCP_SERVER_VERSION;
   CHANGELOG.md covers 0.1.0 and 0.2.0 (M8–M12, custody disclaimer included).
-- **Publish prep, verified but NOT published**: package renamed
-  `bsv-pay-cli` (bins: `bsv-pay` + `bsvpay`), alias package
-  `packages/bsvpay` (exact-version launcher via the new `./cli` export),
-  `files` includes docs/ + CHANGELOG, `prepublishOnly` runs tests + build.
-  Tarball was global-installed into a fresh prefix and the alias launcher
-  run against it — contracts intact (DECISIONS M13).
+- **Publishing setup**: package `bsv-pay-cli` (bins `bsv-pay` + `bsvpay`),
+  `files` ships dist/ + docs/ + CHANGELOG, `prepublishOnly` runs the full
+  test suite + build so nothing publishes from a red tree.
 
-**Publish-day runbook (owner-gated — do NOT run without the owner):**
-1. Owner reviews the guide + runs `npm run demo:two-agents` personally.
-2. `git tag v0.2.0 && git push --tags` (after the owner's go).
-3. `npm publish` at the repo root (`bsv-pay-cli`; prepublishOnly gates it).
-4. `cd packages/bsvpay && npm publish` (depends on the published main pkg).
-5. Post-publish: `npm i -g bsv-pay-cli` on a clean prefix → `bsv-pay
-   --version`; then `npm i -g bsvpay` on another clean prefix.
-6. Remember the standing IOU above: BRC-100 stays `--experimental` until
-   the real-app pass in docs/BRC100.md happens (not a 0.2.0 blocker — the
-   docs disclaim it — but it gates any future promotion of the flag).
+**Post-launch standing items:**
+1. The BRC-100 real-app IOU above still gates any promotion of
+   `--experimental-brc100` (not a 0.2.0 blocker — the docs disclaim it).
+2. If a future release ever revisits an alias name, read DECISIONS.md M13
+   first: npm's similarity check killed `bsvpay`, and the owner's call was
+   one canonical name, not a third attempt.
 
 ## In-flight notes
 
@@ -170,6 +182,5 @@ Everything up to (and deliberately excluding) `npm publish` is done:
   `src/commands/approvals.ts` are deliberately NOT exported from `bsv-pay/core`;
   keep it that way when wiring MCP.
 - Versioning: 0.2.0 everywhere (package.json, CLI `--version`,
-  MCP_SERVER_VERSION). npm naming is implemented but unpublished:
-  `bsv-pay-cli` + the `bsvpay` alias in packages/bsvpay; binary `bsv-pay`
-  (plus a `bsvpay` bin alias). The publish itself awaits the owner.
+  MCP_SERVER_VERSION) — published to npm as `bsv-pay-cli`; binaries
+  `bsv-pay` and `bsvpay`. No alias package exists (DECISIONS M13).

@@ -23,7 +23,7 @@ npm run demo:two-agents   # a seller, a buyer agent, and the policy that governs
 ## 60-second quickstart
 
 ```bash
-npm install -g bsv-pay-cli     # or: npm install -g bsvpay (same thing)
+npm install -g bsv-pay-cli
 
 # 1. Create a wallet (you'll write down a 12-word seed and pick a passphrase)
 bsv-pay init --testnet
