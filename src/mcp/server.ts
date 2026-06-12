@@ -12,6 +12,7 @@ import { createRequest, awaitPayment } from '../core/request.js';
 import { send } from '../core/send.js';
 import type { CoreWallet } from '../core/wallet.js';
 import { paidFetch } from '../http402/client.js';
+import type { Brc100Interface } from '../wallet/brc100.js';
 
 /**
  * The bsv-pay MCP server: tools over the core library, nothing else. The
@@ -35,6 +36,8 @@ export interface McpServerOptions {
   config?: Partial<Config>;
   /** Tests inject a mock; production uses the default (WhatsOnChain). */
   provider?: ChainProvider;
+  /** Tests inject a mock BRC-100 wallet app (used only under brc100 custody). */
+  brc100?: Brc100Interface;
 }
 
 export const MCP_SERVER_VERSION = '0.1.0';
@@ -118,7 +121,12 @@ async function guard(
 }
 
 export function buildMcpServer(opts: McpServerOptions): McpServer {
-  const core = { network: opts.network, config: opts.config, provider: opts.provider };
+  const core = {
+    network: opts.network,
+    config: opts.config,
+    provider: opts.provider,
+    brc100: opts.brc100,
+  };
   const networkLabel = opts.network === 'test' ? 'BSV testnet' : 'BSV MAINNET (real money)';
 
   const server = new McpServer({ name: 'bsv-pay', version: MCP_SERVER_VERSION });

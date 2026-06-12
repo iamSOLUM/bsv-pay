@@ -26,8 +26,14 @@ import { readLedger } from '../src/ledger.js';
 import { buildMcpServer } from '../src/mcp/server.js';
 import { resetSessionSpentForTests } from '../src/policy/budget.js';
 import { resetPolicyCacheForTests } from '../src/policy/policy.js';
-import { buildWalletFile, writeWalletFile, Wallet } from '../src/wallet/wallet.js';
+import {
+  buildBrc100WalletFile,
+  buildWalletFile,
+  writeWalletFile,
+  Wallet,
+} from '../src/wallet/wallet.js';
 import type { Ctx } from '../src/context.js';
+import { MockBrc100Wallet } from './mock-brc100.js';
 import { MockChainProvider } from './mock-provider.js';
 
 /**
@@ -73,6 +79,18 @@ describe('static choke points: all spend I/O lives behind the gate', () => {
       // only via core send() and can neither sign nor broadcast itself.
       pattern: /\bfetch\(/,
       allowed: ['chain/whatsonchain.ts', 'http402/client.ts'],
+    },
+    {
+      // M12: asking the external BRC-100 wallet to sign/broadcast is a door
+      // money leaves through, exactly like provider.broadcast.
+      name: 'BRC-100 external wallet actions',
+      pattern: /createAction\(|signAction\(|internalizeAction\(/,
+      allowed: ['wallet/brc100.ts'],
+    },
+    {
+      name: 'BRC-100 spend door',
+      pattern: /payToAddress\(/,
+      allowed: ['wallet/brc100.ts', 'core/send.ts'],
     },
     {
       name: 'gate invocation',
@@ -362,4 +380,59 @@ describe('sweep: every spend entry point broadcasts only gate-authorized transac
     await expect(provider.broadcast(forged.toHex())).rejects.toThrow(/GATE BYPASS/);
     expect(provider.broadcasts).toHaveLength(0);
   });
+
+  it('send() under BRC-100 custody (M12): the external wallet only ever signs gate-authorized spends', async () => {
+    writeWalletFile('main', buildBrc100WalletFile('main', 'http://mock.invalid:0'));
+    const brc100 = new CrossCheckBrc100Wallet();
+    brc100.fund(80_000);
+    const external = await openWallet({ network: 'main', brc100 });
+    await send(external, { network: 'main' }, { to: RECIPIENT, amountSats: 5_000 });
+    expect(brc100.broadcasts).toHaveLength(1);
+  });
+
+  it('meta: the BRC-100 cross-check rejects an unledgered createAction', async () => {
+    const brc100 = new CrossCheckBrc100Wallet();
+    brc100.fund(80_000);
+    await expect(
+      brc100.createAction({
+        description: 'forged action',
+        outputs: [
+          {
+            lockingScript: new P2PKH().lock(RECIPIENT).toHex(),
+            satoshis: 1234,
+            outputDescription: 'forged',
+          },
+        ],
+      }),
+    ).rejects.toThrow(/GATE BYPASS/);
+    expect(brc100.broadcasts).toHaveLength(0);
+  });
 });
+
+/**
+ * M12: the BRC-100 analog of CrossCheckProvider — the "wallet app" refuses
+ * to create any action whose first output lacks a prior ledgered allow
+ * decision. If a code path could reach the external wallet around the
+ * gate, this signer would catch it.
+ */
+class CrossCheckBrc100Wallet extends MockBrc100Wallet {
+  override async createAction(
+    args: Parameters<MockBrc100Wallet['createAction']>[0],
+  ): ReturnType<MockBrc100Wallet['createAction']> {
+    const out = args.outputs?.[0];
+    const recipient = out ? outputAddress(out.lockingScript) : null;
+    const authorized = readLedger('main').some(
+      (e) =>
+        e.type === 'policy_decision' &&
+        e.decision === 'allow' &&
+        e.address === recipient &&
+        e.amount_sats === out?.satoshis,
+    );
+    if (!authorized) {
+      throw new Error(
+        `GATE BYPASS: external wallet asked to pay ${out?.satoshis ?? '?'} sats to ${recipient} with no prior allow decision in the ledger`,
+      );
+    }
+    return super.createAction(args);
+  }
+}
