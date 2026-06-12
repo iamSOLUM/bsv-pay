@@ -60,7 +60,11 @@ program
   .option('--import-wif', 'import a raw WIF private key (not recommended)')
   .option('--force', 'overwrite an existing wallet')
   .option('--no-encrypt', 'EXPLICIT OPT-IN: store the seed unencrypted (dangerous)')
-  .option('--brc100', 'connect a BRC-100 wallet (not yet supported)')
+  .option('--brc100', 'connect a BRC-100 wallet (see --experimental-brc100)')
+  .option(
+    '--experimental-brc100',
+    'EXPERIMENTAL: delegate custody to a BRC-100 wallet app (keys never leave it)',
+  )
   .action(run<[InitOptions]>((ctx, opts) => cmdInit(ctx, opts)));
 
 program

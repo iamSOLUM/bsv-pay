@@ -4,8 +4,9 @@ import type { Ctx } from '../context.js';
 import { CliError, EXIT, usageError } from '../errors.js';
 import { walletPath } from '../paths.js';
 import { ask, askHidden, confirm, isInteractive, readStdinLine } from '../prompt.js';
-import { connectBrc100 } from '../wallet/brc100.js';
+import { connectBrc100, type ConnectBrc100Options } from '../wallet/brc100.js';
 import {
+  buildBrc100WalletFile,
   buildWalletFile,
   walletExists,
   writeWalletFile,
@@ -19,6 +20,7 @@ export interface InitOptions {
   force?: boolean;
   encrypt?: boolean; // commander --no-encrypt => false
   brc100?: boolean;
+  experimentalBrc100?: boolean;
 }
 
 function stderr(text: string): void {
@@ -139,8 +141,25 @@ async function obtainNewPassphrase(encrypt: boolean): Promise<string | null> {
   }
 }
 
-export async function cmdInit(ctx: Ctx, opts: InitOptions): Promise<void> {
-  if (opts.brc100) connectBrc100();
+export async function cmdInit(
+  ctx: Ctx,
+  opts: InitOptions,
+  brc100Connect?: ConnectBrc100Options,
+): Promise<void> {
+  if (opts.brc100) {
+    throw usageError(
+      'brc100_not_supported',
+      'BRC-100 custody is EXPERIMENTAL. Re-run with --experimental-brc100 to connect an ' +
+        'external wallet app (spending works; receiving still needs the wallet app itself — ' +
+        'see the README), or use a local wallet: "bsv-pay init".',
+    );
+  }
+  if (opts.experimentalBrc100 && (opts.importSeed || opts.importWif)) {
+    throw usageError(
+      'conflicting_flags',
+      '--experimental-brc100 delegates custody to the external wallet; there is no seed or WIF to import.',
+    );
+  }
   if (opts.importSeed && opts.importWif) {
     throw usageError('conflicting_flags', 'Pass either --import-seed or --import-wif, not both.');
   }
@@ -151,6 +170,11 @@ export async function cmdInit(ctx: Ctx, opts: InitOptions): Promise<void> {
       `A ${ctx.network === 'test' ? 'testnet ' : ''}wallet already exists at ${walletPath(ctx.network)}. ` +
         'Re-run with --force to overwrite it (this DESTROYS the old wallet unless you have its seed).',
     );
+  }
+
+  if (opts.experimentalBrc100) {
+    await initBrc100(ctx, brc100Connect);
+    return;
   }
 
   const secret: SecretPayload = opts.importSeed
@@ -195,5 +219,45 @@ export async function cmdInit(ctx: Ctx, opts: InitOptions): Promise<void> {
     encrypted: passphrase !== null,
     type: secret.type,
     address: firstAddress,
+  });
+}
+
+/**
+ * EXPERIMENTAL BRC-100 custody: connect the external wallet app, verify the
+ * network, and write a wallet file that records the delegation — no seed, no
+ * passphrase, nothing secret stored locally. Spending goes through the same
+ * policy gate as every wallet; receiving stays in the wallet app (documented
+ * limitation, see README).
+ */
+async function initBrc100(ctx: Ctx, connectOpts?: ConnectBrc100Options): Promise<void> {
+  stderr(chalk.yellow('BRC-100 custody is EXPERIMENTAL. Keys stay in your wallet app;'));
+  stderr(
+    chalk.yellow('bsv-pay will ask it to pay, and your policy.toml still governs every spend.'),
+  );
+  stderr('Connecting to the wallet app... (approve the connection if it prompts)');
+
+  const wallet = await connectBrc100(ctx.network, connectOpts);
+  await wallet.waitForAuthentication();
+  const identityKey = await wallet.identityKey();
+  const version = await wallet.version();
+
+  writeWalletFile(ctx.network, buildBrc100WalletFile(ctx.network, wallet.url));
+
+  ctx.out.info('');
+  ctx.out.info(chalk.green('Wallet connected (BRC-100, experimental).'));
+  ctx.out.info(`  Network:        ${ctx.network === 'test' ? 'testnet' : 'mainnet'}`);
+  ctx.out.info(`  Custody:        external wallet app (${version}) at ${wallet.url}`);
+  ctx.out.info(`  Identity key:   ${identityKey}`);
+  ctx.out.info(`  State dir:      ${walletPath(ctx.network)}`);
+  ctx.out.info('');
+  ctx.out.info('Spending (send/fetch/MCP pay) works now, governed by policy.toml.');
+  ctx.out.info('Receiving still happens in the wallet app itself — see the README.');
+  ctx.out.result({
+    ok: true,
+    network: ctx.network,
+    backend: 'brc100',
+    type: 'brc100',
+    identity_key: identityKey,
+    wallet_url: wallet.url,
   });
 }

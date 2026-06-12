@@ -16,6 +16,14 @@ export interface WalletFile {
   version: 1;
   network: Network;
   encrypted: boolean;
+  /**
+   * 'brc100' delegates custody to an external BRC-100 wallet app
+   * (EXPERIMENTAL, M12): no secret is stored and the local signing Wallet
+   * never exists. Absent = local-seed custody.
+   */
+  backend?: 'brc100';
+  /** JSON-API URL of the external wallet (backend === 'brc100' only). */
+  brc100_url?: string;
   /** Present only when encrypted === false (explicit opt-in at init). */
   secret?: SecretPayload;
   kdf?: KdfParams;
@@ -77,6 +85,20 @@ export function buildWalletFile(
   return { ...base, encrypted: true, kdf, cipher };
 }
 
+/** Wallet file for external BRC-100 custody: no secret, no counters in use. */
+export function buildBrc100WalletFile(network: Network, url: string): WalletFile {
+  return {
+    version: 1,
+    network,
+    encrypted: false,
+    backend: 'brc100',
+    brc100_url: url,
+    next_receive_index: 0,
+    next_change_index: 0,
+    created_at: new Date().toISOString(),
+  };
+}
+
 export const UNENCRYPTED_WALLET_WARNING =
   'WARNING: this wallet stores its seed UNENCRYPTED on disk. Anyone who can read\n' +
   '~/.bsv-pay can spend your funds. Re-run "bsv-pay init --force" to encrypt.';
@@ -131,6 +153,15 @@ export class Wallet {
 
   static async unlock(network: Network, options: UnlockOptions = {}): Promise<Wallet> {
     const file = readWalletFile(network);
+    if (file.backend === 'brc100') {
+      // Defensive: core openWallet() branches to the BRC-100 backend before
+      // ever reaching here; nothing else should try a local unlock.
+      throw new CliError(
+        EXIT.USAGE,
+        'brc100_no_local_keys',
+        'This wallet delegates custody to an external BRC-100 wallet; there is no local seed to unlock.',
+      );
+    }
     const warn = options.onWarning ?? ((text: string) => process.stderr.write(text + '\n'));
     let secret: SecretPayload;
     if (file.encrypted) {
