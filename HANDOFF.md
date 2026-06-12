@@ -174,7 +174,9 @@ What M13 delivered:
   full/stress runs; name lost to output truncation). Never reproduced locally,
   including 5 stress runs of the timing-sensitive files (watch, request,
   core-request, approvals, policy-load). If CI ever shows a flaky test, that's
-  the lead — chase it with full logs before anything else.
+  the lead — chase it with full logs before anything else. (The SEPARATE e2e
+  step-7 flake found post-publish was diagnosed and fixed — a harness race,
+  see DECISIONS.md M13; no evidence links the two.)
 - Phase 1 e2e loop is the regression canary; never weaken or skip existing tests.
 - Session budgets are in-memory per process — relevant to the MCP server design
   (a server restart resets session, never daily, budgets).

@@ -179,6 +179,11 @@ try {
     payment = watchEvents.find((e) => e.event === 'payment');
   }
   watch.kill();
+  // Wait for the process to actually die: a lingering watch can complete one
+  // more poll cycle and ledger the change from step 5's send as a fresh
+  // receive, corrupting the step-7 history assertion (seen flaking on a
+  // loaded Windows machine — kill() returns before termination completes).
+  await new Promise((resolve) => watch.once('close', resolve));
   check(!!payment, 'watch emitted a payment event within ~15s');
   if (payment) {
     check(payment.txid === faucetTxid && payment.amount_sats === 10_000, 'payment txid + amount match');
@@ -239,7 +244,7 @@ try {
   const movements = await core.getHistory(coreOpts);
   check(
     movements.length === 2 && movements[0].type === 'send' && movements[1].type === 'receive',
-    'library getHistory sees the CLI loop, newest first',
+    `library getHistory sees the CLI loop, newest first (got: ${movements.map((m) => `${m.type}:${m.amount_sats}`).join(', ') || 'empty'})`,
   );
 
   // passphrase passed explicitly (no env var in this process) — never prompts
