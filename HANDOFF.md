@@ -168,6 +168,18 @@ What M13 delivered:
    first: npm's similarity check killed `bsvpay`, and the owner's call was
    one canonical name, not a third attempt.
 
+## Next: Phase 3 — identity-key payments (scoped 2026-06-13)
+
+A community proposal for identity-key receive (BRC-29 derivation, peer
+artifacts, `internalizeAction`) was assessed and owner-ratified as the
+Phase 3 thesis. Roadmap: **AGENT-PHASE3.md** (M14 bsv-pay↔bsv-pay rail,
+M15 external interop behind the real-app gate, M16 promotion checkpoint).
+Contributor rules: **CONTRIBUTING.md** (new). Key standing rule recorded
+in DECISIONS.md Phase 3: defaults flip by explicit opt-in and
+human-verified promotion only — never environment detection. Design
+discussion happens in the contributor's issue BEFORE code; the
+identity-key policy-list semantics decision is mandatory pre-code.
+
 ## In-flight notes
 
 - **Unreproduced flake**: exactly one unit test failed once on 2026-06-11 (1 of 9
