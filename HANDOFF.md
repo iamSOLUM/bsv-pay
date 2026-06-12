@@ -1,4 +1,4 @@
-# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-12, post-M12 build)
+# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-12, M13 BUILT — publish checkpoint OPEN)
 
 For a fresh session: read CLAUDE.md (invariants — they override everything), then
 AGENT-PHASE2.md (roadmap M8–M13), DECISIONS.md, this file. Run the verification
@@ -122,12 +122,39 @@ Other M12 facts a next session needs:
 - The owner has NOT yet run the manual external-wallet loop; the mock-based
   proofs are green. Offer the docs/BRC100.md walkthrough before M13 ships.
 
-## Next: M13 — the finale, with its own checkpoint
+## M13 — BUILT 2026-06-12; THE PUBLISH CHECKPOINT IS OPEN. NOTHING IS PUBLISHED.
 
-M13 (two-agent demo, the "Agentic payments" guide, README, v0.2.0 bump +
-CHANGELOG, npm publish as `bsv-pay-cli` + `bsvpay` alias) closes Phase 2 and
-ends in an owner checkpoint of its own — it is the launch artifact, so expect
-the owner to review and run the demo before anything ships publicly.
+Everything up to (and deliberately excluding) `npm publish` is done:
+
+- **Two-agent demo**: `npm run demo:two-agents` (examples/two-agents/) — a
+  real `bsv-pay serve` seller and an MCP-only scripted buyer on the mock
+  chain: free price discovery, two governed buys, a prompt-injection
+  payment blocked by the denylist, the daily-budget stop, the printed
+  ledger. The orchestrator asserts every beat (doubles as a smoke test;
+  not in CI by decision). README shows the Claude Code swap-in.
+- **Launch guide**: docs/AGENTIC-PAYMENTS.md — threat model, MCP setup
+  (Claude Code/Desktop, Cursor), 402 quickstart, BRC-100 custody **with
+  the owner-required disclaimer** (experimental, mock-tested, pending
+  real-app verification), and the map of executable proofs.
+- **v0.2.0**: package.json + `cli --version` + MCP_SERVER_VERSION;
+  CHANGELOG.md covers 0.1.0 and 0.2.0 (M8–M12, custody disclaimer included).
+- **Publish prep, verified but NOT published**: package renamed
+  `bsv-pay-cli` (bins: `bsv-pay` + `bsvpay`), alias package
+  `packages/bsvpay` (exact-version launcher via the new `./cli` export),
+  `files` includes docs/ + CHANGELOG, `prepublishOnly` runs tests + build.
+  Tarball was global-installed into a fresh prefix and the alias launcher
+  run against it — contracts intact (DECISIONS M13).
+
+**Publish-day runbook (owner-gated — do NOT run without the owner):**
+1. Owner reviews the guide + runs `npm run demo:two-agents` personally.
+2. `git tag v0.2.0 && git push --tags` (after the owner's go).
+3. `npm publish` at the repo root (`bsv-pay-cli`; prepublishOnly gates it).
+4. `cd packages/bsvpay && npm publish` (depends on the published main pkg).
+5. Post-publish: `npm i -g bsv-pay-cli` on a clean prefix → `bsv-pay
+   --version`; then `npm i -g bsvpay` on another clean prefix.
+6. Remember the standing IOU above: BRC-100 stays `--experimental` until
+   the real-app pass in docs/BRC100.md happens (not a 0.2.0 blocker — the
+   docs disclaim it — but it gates any future promotion of the flag).
 
 ## In-flight notes
 
@@ -142,6 +169,7 @@ the owner to review and run the demo before anything ships publicly.
 - `planApprovedSend` (core/send.ts) and the prompt-injection seams in
   `src/commands/approvals.ts` are deliberately NOT exported from `bsv-pay/core`;
   keep it that way when wiring MCP.
-- Versioning: still 0.1.0 — the bump to 0.2.0 + CHANGELOG is an M13 deliverable.
-  npm publish naming (decided earlier, not yet executed): `bsv-pay-cli` with
-  `bsvpay` alias; binary stays `bsv-pay`.
+- Versioning: 0.2.0 everywhere (package.json, CLI `--version`,
+  MCP_SERVER_VERSION). npm naming is implemented but unpublished:
+  `bsv-pay-cli` + the `bsvpay` alias in packages/bsvpay; binary `bsv-pay`
+  (plus a `bsvpay` bin alias). The publish itself awaits the owner.
