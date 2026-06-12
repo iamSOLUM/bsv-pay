@@ -34,10 +34,13 @@ files; e2e has 10 steps).
   proven by `test/spend-concurrency.test.ts` + the MCP racing-pays test.
   `scripts/demo-chain.mjs` (`npm run demo:chain`) is a standalone mock chain
   with a faucet for interactive demos — public testnet faucets are dead.
-- **M11 — HTTP 402 (BRC-105 simplified profile)**, built 2026-06-12. Researched
-  first: full BRC-105 needs BRC-103/104 mutual auth + BRC-29/AtomicBEEF, which
-  need BRC-100 custody — that is M12; the SDK's AuthFetch becomes usable then.
-  Shipped now (rationale + divergences in DECISIONS.md M11):
+- **M11 — HTTP 402 (BRC-105 simplified profile)**, built 2026-06-12 and the
+  design call **RATIFIED by the owner on 2026-06-12**: the simplified profile
+  is approved; the README's interop caveat ("Compatibility, honestly") stays
+  prominent until M12 closes it. Researched first: full BRC-105 needs
+  BRC-103/104 mutual auth + BRC-29/AtomicBEEF, which need BRC-100 custody —
+  that is M12; the SDK's AuthFetch becomes usable then.
+  Shipped (rationale + divergences in DECISIONS.md M11):
   - `src/http402/`: protocol (BRC-105 headers, `x-bsv-payment-address`
     extension, raw-hex envelope), client (`paidFetch` — pays via core `send()`,
     `maxPriceSats` pre-gate cap, exit 10 `payment_not_redeemed` carries the
@@ -58,26 +61,46 @@ files; e2e has 10 steps).
     balance/ledger, max-price cap, and the third fetch blocked by the daily
     budget.
 
-## Next action: M12 — BRC-100 custody (no hard checkpoint gate)
+## Next action: M12 — BRC-100 custody (wait for the owner's go)
 
 Replace the `init --brc100` stub (exit 2 `brc100_not_supported`,
 `src/wallet/brc100.ts`) with a real connection via @bsv/sdk's wallet client
 interface (BSV Desktop / Metanet Desktop expose it; wallet-toolbox documents
-it). Requirements from AGENT-PHASE2.md:
+it). Requirements from AGENT-PHASE2.md, plus the owner's standing
+instructions (given 2026-06-12 when ratifying M11):
 
-- Custody model: keys live in the external wallet; bsv-pay constructs actions
-  and requests signatures. The policy engine still runs as a second layer in
-  front — invariant 2 applies unchanged.
-- All commands and MCP tools work identically with either backend; the backend
-  is a wallet-provider decision invisible above core.
-- If the external-wallet protocol proves unstable, ship behind
-  `--experimental-brc100` with documented limitations rather than blocking.
+1. **The policy engine stays enforced IN FRONT of external custody — that
+   layering is the product.** An external wallet signs; bsv-pay still decides.
+   Invariant 2 applies unchanged: every spend through `authorizeSpend()`, no
+   backend can route around the gate, and the policy-gate sweep must cover the
+   BRC-100 spend path like every other.
+2. **When manual verification needs external wallet software, produce a
+   noob-proof setup guide for the owner**: which wallet to install, where to
+   download it from, how to configure it for testnet, and the exact
+   verification loop to run, step by step. Do not assume prior familiarity
+   with BSV Desktop / Metanet Desktop.
+3. **Prefer the `--experimental-brc100` escape hatch over stalling** if the
+   external-wallet protocol fights back: ship behind the flag with documented
+   limitations rather than blocking the milestone.
+
+Technical notes carried forward:
+- All commands and MCP tools must work identically with either backend; the
+  backend is a wallet-provider decision invisible above core (invariant 1:
+  key material — now including external-wallet handles — never crosses out).
 - M12 is also the moment to revisit full BRC-105 compliance: with a BRC-100
   wallet, the 402 client can switch to the SDK's AuthFetch (BRC-29 derivation,
-  AtomicBEEF, mutual auth) for external services. Keep our simplified-profile
-  serve/fetch working for local-seed wallets.
-- Hard checkpoints existed after M9 and M10 only — but M12 touches custody, so
-  keep diffs small/isolated for human review, and testnet/mock only as always.
+  AtomicBEEF, mutual auth) for external services, closing the README interop
+  caveat. Keep the simplified-profile serve/fetch working for local-seed
+  wallets.
+- M12 touches custody: small, isolated commits for human review; testnet/mock
+  only, as always.
+
+## After that: M13 — the finale, with its own checkpoint
+
+M13 (two-agent demo, the "Agentic payments" guide, README, v0.2.0 bump +
+CHANGELOG, npm publish as `bsv-pay-cli` + `bsvpay` alias) closes Phase 2 and
+ends in an owner checkpoint of its own — it is the launch artifact, so expect
+the owner to review and run the demo before anything ships publicly.
 
 ## In-flight notes
 
