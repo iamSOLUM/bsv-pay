@@ -64,6 +64,23 @@ export interface Brc100PayResult {
   sizeBytes: number;
 }
 
+/**
+ * Receive-side surfaces (request/watch/serve, MCP request tools) refuse
+ * under BRC-100 custody: a payment address issued outside the wallet app
+ * would be invisible to it — the funds would land somewhere the wallet
+ * cannot see or spend. Receiving stays in the wallet app (documented
+ * limitation of the experimental backend; see DECISIONS.md M12).
+ */
+export function brc100ReceiveNotSupported(): CliError {
+  return new CliError(
+    EXIT.USAGE,
+    'brc100_receive_not_supported',
+    'Receiving through bsv-pay is not supported with BRC-100 custody (experimental): an address ' +
+      'issued by bsv-pay would be invisible to the wallet app and the funds unspendable from it. ' +
+      "Use the wallet app's own receive screen, or a local-seed wallet for request/watch/serve.",
+  );
+}
+
 function unreachable(url: string, cause: string): CliError {
   return new CliError(
     EXIT.WALLET_LOCKED,

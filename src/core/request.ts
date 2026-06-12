@@ -2,6 +2,7 @@ import { CliError, EXIT } from '../errors.js';
 import { appendLedger } from '../ledger.js';
 import type { Network } from '../paths.js';
 import { satsToBsvString } from '../units.js';
+import { brc100ReceiveNotSupported } from '../wallet/brc100.js';
 import { resolveCore, type CoreOptions } from './context.js';
 import { unwrapWallet } from './internal.js';
 import type { CoreWallet } from './wallet.js';
@@ -39,6 +40,7 @@ export function createRequest(wallet: CoreWallet, params: RequestParams): Reques
       `amountSats must be a positive integer of satoshis (got ${params.amountSats}).`,
     );
   }
+  if (wallet.backend === 'brc100') throw brc100ReceiveNotSupported();
   const inner = unwrapWallet(wallet);
   const { address } = inner.issueAddress('request', params.memo);
   return {

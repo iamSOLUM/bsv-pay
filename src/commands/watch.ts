@@ -5,6 +5,7 @@ import type { Ctx } from '../context.js';
 import { usageError } from '../errors.js';
 import { appendLedger, readLedger, trackedAddressesFromLedger } from '../ledger.js';
 import { formatSats } from '../units.js';
+import { brc100ReceiveNotSupported } from '../wallet/brc100.js';
 import { readWalletFile } from '../wallet/wallet.js';
 import { explorerTxUrl } from './send.js';
 
@@ -58,7 +59,8 @@ export async function cmdWatch(
   maxCycles = Infinity,
 ): Promise<void> {
   const chain = provider ?? new WhatsOnChainProvider(ctx.network);
-  readWalletFile(ctx.network); // exit 2 with guidance when no wallet
+  const file = readWalletFile(ctx.network); // exit 2 with guidance when no wallet
+  if (file.backend === 'brc100') throw brc100ReceiveNotSupported();
 
   let intervalSecs = ctx.config.pollIntervalSecs;
   if (opts.interval !== undefined) {

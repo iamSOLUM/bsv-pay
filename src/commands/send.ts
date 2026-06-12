@@ -97,9 +97,16 @@ export async function cmdSend(
   const summaryLines = [
     `  Recipient:        ${address}`,
     `  Amount:           ${formatSats(amountSats)}`,
-    `  Fee:              ${plan.feeSats} sats (${ctx.config.feeRateSatsPerKb} sats/KB, ${plan.inputCount} input${plan.inputCount === 1 ? '' : 's'})`,
-    `  Balance after:    ${formatSats(plan.balanceAfterSats)}`,
+    plan.external
+      ? `  Fee:              ~${plan.feeSats} sats estimated (the external wallet sets the real fee)`
+      : `  Fee:              ${plan.feeSats} sats (${ctx.config.feeRateSatsPerKb} sats/KB, ${plan.inputCount} input${plan.inputCount === 1 ? '' : 's'})`,
+    `  Balance after:    ${plan.external ? '~' : ''}${formatSats(plan.balanceAfterSats)}`,
   ];
+  if (plan.external) {
+    summaryLines.push(
+      '  Custody:          external BRC-100 wallet app (it may ask you to approve)',
+    );
+  }
   if (memo) summaryLines.push(`  Memo (local):     ${memo}`);
   for (const line of summaryLines) process.stderr.write(line + '\n');
 
@@ -120,8 +127,12 @@ export async function cmdSend(
 
   if (result.dryRun) {
     ctx.out.info(chalk.bold('Dry run complete (not broadcast).'));
-    ctx.out.info(`  Txid (if sent):   ${result.txid}`);
-    ctx.out.info(`  Size:             ${result.sizeBytes} bytes`);
+    if (result.external) {
+      ctx.out.info('  Txid (if sent):   decided by the external wallet');
+    } else {
+      ctx.out.info(`  Txid (if sent):   ${result.txid}`);
+      ctx.out.info(`  Size:             ${result.sizeBytes} bytes`);
+    }
     ctx.out.result({
       ok: true,
       dry_run: true,
@@ -131,6 +142,8 @@ export async function cmdSend(
       fee_sats: result.feeSats,
       change_sats: result.changeSats,
       balance_after_sats: result.balanceAfterSats,
+      ...(result.feeEstimated ? { fee_estimated: true } : {}),
+      ...(result.external ? { backend: 'brc100' } : {}),
     });
     return;
   }
@@ -148,5 +161,7 @@ export async function cmdSend(
     change_sats: result.changeSats,
     balance_after_sats: result.balanceAfterSats,
     explorer_url: result.explorerUrl,
+    ...(result.feeEstimated ? { fee_estimated: true } : {}),
+    ...(result.external ? { backend: 'brc100' } : {}),
   });
 }

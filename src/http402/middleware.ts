@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CoreOptions } from '../core/context.js';
 import { awaitPayment, createRequest } from '../core/request.js';
 import type { CoreWallet } from '../core/wallet.js';
+import { brc100ReceiveNotSupported } from '../wallet/brc100.js';
 import { buildTermsHeaders, parsePaymentEnvelope, transactionPays, HEADER } from './protocol.js';
 
 /**
@@ -53,6 +54,10 @@ interface Quote {
 }
 
 export function requirePayment(opts: RequirePaymentOptions): PaidRequestHandler {
+  // Selling means issuing receive addresses, which BRC-100 custody cannot do
+  // (the wallet app would never see the funds). Fail at construction, not on
+  // the first customer.
+  if (opts.wallet.backend === 'brc100') throw brc100ReceiveNotSupported();
   const quoteTtlMs = opts.quoteTtlMs ?? 600_000;
   const confirmTimeoutMs = opts.confirmTimeoutMs ?? 20_000;
   const core: CoreOptions = {

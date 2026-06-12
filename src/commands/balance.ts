@@ -8,10 +8,15 @@ export async function cmdBalance(ctx: Ctx, provider?: ChainProvider): Promise<vo
   const balance = await getBalance({ network: ctx.network, config: ctx.config, provider });
 
   ctx.out.info(chalk.bold(`Balance (${ctx.network === 'test' ? 'testnet' : 'mainnet'})`));
-  ctx.out.info(`  Confirmed:    ${formatSats(balance.confirmedSats)}`);
-  ctx.out.info(`  Unconfirmed:  ${formatSats(balance.unconfirmedSats)}`);
-  ctx.out.info(`  Total:        ${formatSats(balance.confirmedSats + balance.unconfirmedSats)}`);
-  ctx.out.info(`  Tracked addresses: ${balance.addresses.length}`);
+  if (balance.backend === 'brc100') {
+    ctx.out.info(`  Spendable:    ${formatSats(balance.confirmedSats)}`);
+    ctx.out.info('  Custody:      external BRC-100 wallet app (experimental)');
+  } else {
+    ctx.out.info(`  Confirmed:    ${formatSats(balance.confirmedSats)}`);
+    ctx.out.info(`  Unconfirmed:  ${formatSats(balance.unconfirmedSats)}`);
+    ctx.out.info(`  Total:        ${formatSats(balance.confirmedSats + balance.unconfirmedSats)}`);
+    ctx.out.info(`  Tracked addresses: ${balance.addresses.length}`);
+  }
   ctx.out.result({
     ok: true,
     confirmed_sats: balance.confirmedSats,
@@ -21,5 +26,6 @@ export async function cmdBalance(ctx: Ctx, provider?: ChainProvider): Promise<vo
       confirmed_sats: a.confirmedSats,
       unconfirmed_sats: a.unconfirmedSats,
     })),
+    ...(balance.backend ? { backend: balance.backend } : {}),
   });
 }

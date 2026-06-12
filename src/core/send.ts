@@ -10,10 +10,11 @@ import {
   registerAuthorizedPlan,
   takeAuthorizedPlan,
 } from '../policy/engine.js';
-import { buildSignedTx, selectUtxos, type SpendableUtxo } from '../tx.js';
+import { buildSignedTx, feeForTx, selectUtxos, type SpendableUtxo } from '../tx.js';
+import type { Brc100Wallet } from '../wallet/brc100.js';
 import type { Wallet } from '../wallet/wallet.js';
 import { resolveCore, type CoreOptions, type ResolvedCore } from './context.js';
-import { unwrapWallet } from './internal.js';
+import { unwrapBackend } from './internal.js';
 import { withSpendLock } from './spend-lock.js';
 import type { CoreWallet } from './wallet.js';
 
@@ -56,6 +57,12 @@ export interface SendPlan {
   inputs: SpendableUtxo[];
   /** Where change will go (derived but not persisted until execution). */
   changeAddress: string;
+  /**
+   * BRC-100 custody (additive, M12): the external wallet funds and signs,
+   * so inputs/change are its business and feeSats is an estimate until the
+   * wallet returns the real transaction.
+   */
+  external?: true;
 }
 
 export interface SendResult {
@@ -74,6 +81,13 @@ export interface SendResult {
    * signatures and public keys, never key material.
    */
   rawTxHex: string;
+  /** BRC-100 custody (additive, M12): the external wallet signed/broadcast. */
+  external?: true;
+  /**
+   * True when feeSats is bsv-pay's estimate, not the wallet's final fee
+   * (BRC-100 dry runs, or a wallet that returned an undecodable tx).
+   */
+  feeEstimated?: true;
 }
 
 async function gatherSpendableUtxos(
@@ -110,7 +124,35 @@ async function buildPlan(
   resolved: ResolvedCore,
   params: { to: string; amountSats: number; memo?: string; confirmedOnly?: boolean },
 ): Promise<SendPlan> {
-  const inner = unwrapWallet(wallet);
+  const backend = unwrapBackend(wallet);
+  if (backend.kind === 'brc100') {
+    // The external wallet funds and signs; coin selection and the real fee
+    // are its business. Pre-check only what is definitely insufficient and
+    // estimate the fee for display — the wallet's figure lands in the result.
+    const balance = await backend.wallet.getBalanceSats();
+    if (balance < params.amountSats) {
+      throw new CliError(
+        EXIT.INSUFFICIENT_FUNDS,
+        'insufficient_funds',
+        `Insufficient funds: trying to send ${params.amountSats} sats but the external wallet reports only ${balance} sats spendable. Fund the wallet or send less.`,
+        { available_sats: balance, needed_sats: params.amountSats },
+      );
+    }
+    const feeEstimate = feeForTx(1, 2, resolved.config.feeRateSatsPerKb);
+    return {
+      to: params.to,
+      amountSats: params.amountSats,
+      memo: params.memo,
+      feeSats: feeEstimate,
+      changeSats: 0,
+      balanceAfterSats: balance - params.amountSats - feeEstimate,
+      inputCount: 0,
+      inputs: [],
+      changeAddress: '',
+      external: true,
+    };
+  }
+  const inner = backend.wallet;
   const utxos = await gatherSpendableUtxos(inner, resolved.provider, Boolean(params.confirmedOnly));
   const selection = selectUtxos(utxos, params.amountSats, resolved.config.feeRateSatsPerKb);
   const totalAvailable = utxos.reduce((s, u) => s + u.satoshis, 0);
@@ -198,7 +240,11 @@ export async function executeSend(
   const { network, provider } = resolveCore(opts);
   // The other half of the policy gate: no authorization, no broadcast.
   const auth = takeAuthorizedPlan(plan, { to: plan.to, amountSats: plan.amountSats }, !exec.dryRun);
-  const inner = unwrapWallet(wallet);
+  const backend = unwrapBackend(wallet);
+  if (backend.kind === 'brc100') {
+    return executeBrc100Send(backend.wallet, network, plan, auth.decisionId, Boolean(exec.dryRun));
+  }
+  const inner = backend.wallet;
 
   const tx = await buildSignedTx(
     inner,
@@ -273,6 +319,93 @@ export async function executeSend(
   });
   addSessionSpent(network, plan.amountSats);
   return result;
+}
+
+/**
+ * BRC-100 custody: the gate has already authorized this exact spend; the
+ * external wallet now funds, signs, and broadcasts it in one createAction
+ * (so there is no separate broadcast site — the choke-point scan covers
+ * payToAddress instead). Ledger semantics mirror the local path: success
+ * appends `pending`, an ambiguous wallet-side outcome (exit 6) appends
+ * `unknown` and counts against the session budget, a definite refusal
+ * appends nothing. Dry runs return the estimated plan without touching
+ * the external wallet — there is no txid to show until it signs.
+ */
+async function executeBrc100Send(
+  brc100: Brc100Wallet,
+  network: Network,
+  plan: SendPlan,
+  decisionId: string,
+  dryRun: boolean,
+): Promise<SendResult> {
+  if (dryRun) {
+    return {
+      txid: '',
+      to: plan.to,
+      amountSats: plan.amountSats,
+      feeSats: plan.feeSats,
+      changeSats: 0,
+      balanceAfterSats: plan.balanceAfterSats,
+      sizeBytes: 0,
+      dryRun: true,
+      explorerUrl: '',
+      rawTxHex: '',
+      external: true,
+      feeEstimated: true,
+    };
+  }
+
+  let paid;
+  try {
+    paid = await brc100.payToAddress({ to: plan.to, amountSats: plan.amountSats, memo: plan.memo });
+  } catch (e) {
+    if (e instanceof CliError && e.exitCode === EXIT.BROADCAST_UNKNOWN) {
+      // The money may have moved (mirrors the local ambiguous-broadcast path).
+      appendLedger(network, {
+        type: 'send',
+        txid: typeof e.data?.txid === 'string' ? e.data.txid : '',
+        amount_sats: plan.amountSats,
+        address: plan.to,
+        memo: plan.memo,
+        timestamp: new Date().toISOString(),
+        status: 'unknown',
+        decision_id: decisionId,
+      });
+      addSessionSpent(network, plan.amountSats);
+    }
+    throw e;
+  }
+
+  appendLedger(network, {
+    type: 'send',
+    txid: paid.txid,
+    amount_sats: plan.amountSats,
+    address: plan.to,
+    memo: plan.memo,
+    timestamp: new Date().toISOString(),
+    status: 'pending',
+    fee_sats: paid.feeSats,
+    decision_id: decisionId,
+  });
+  addSessionSpent(network, plan.amountSats);
+
+  const feeKnown = paid.feeSats !== undefined;
+  const feeSats = paid.feeSats ?? plan.feeSats;
+  return {
+    txid: paid.txid,
+    to: plan.to,
+    amountSats: plan.amountSats,
+    feeSats,
+    changeSats: paid.changeSats,
+    // plan.balanceAfterSats was computed with the estimated fee; swap in the real one.
+    balanceAfterSats: plan.balanceAfterSats + plan.feeSats - feeSats,
+    sizeBytes: paid.sizeBytes,
+    dryRun: false,
+    explorerUrl: explorerTxUrl(network, paid.txid),
+    rawTxHex: paid.rawTxHex,
+    external: true,
+    ...(feeKnown ? {} : { feeEstimated: true as const }),
+  };
 }
 
 /**
