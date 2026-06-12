@@ -11,6 +11,7 @@ import { getPolicyStatus } from '../core/policy-status.js';
 import { createRequest, awaitPayment } from '../core/request.js';
 import { send } from '../core/send.js';
 import type { CoreWallet } from '../core/wallet.js';
+import { paidFetch } from '../http402/client.js';
 
 /**
  * The bsv-pay MCP server: tools over the core library, nothing else. The
@@ -384,6 +385,84 @@ export function buildMcpServer(opts: McpServerOptions): McpServer {
           change_sats: result.changeSats,
           balance_after_sats: result.balanceAfterSats,
           explorer_url: result.explorerUrl,
+        };
+      }),
+  );
+
+  server.registerTool(
+    'paid_fetch',
+    {
+      title: 'Fetch a URL, paying if required',
+      description:
+        'Fetch an http(s) URL. Free resources cost nothing and return paid:false. ' +
+        'If the server responds 402 Payment Required (BRC-105), this SPENDS ' +
+        'satoshis from the wallet: the payment goes through the same human-set ' +
+        'policy as pay (budgets, limits, lists — refusals are ok:false results ' +
+        'with stable codes) and is IRREVERSIBLE once made. Set max_price_sats ' +
+        'whenever you do not already know the price — it hard-caps this one ' +
+        'fetch regardless of remaining budget. A payment the server then ' +
+        'refuses to honor returns ok:false error "payment_not_redeemed" with ' +
+        'the txid: the money moved; do not blindly retry, that would pay again.',
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+      inputSchema: {
+        url: z.string().describe('http(s) URL to fetch.'),
+        max_price_sats: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Refuse to pay more than this for the resource (satoshis).'),
+        max_body_chars: z
+          .number()
+          .int()
+          .min(1)
+          .max(500_000)
+          .optional()
+          .describe('Truncate the returned body to this many characters (default 50,000).'),
+      },
+      outputSchema: {
+        ...ENVELOPE,
+        ...POLICY_DETAIL_FIELDS,
+        network: z.enum(['main', 'test']).optional(),
+        url: z.string().optional(),
+        status: z.number().int().optional().describe('HTTP status of the final response.'),
+        paid: z.boolean().optional(),
+        content_type: z.string().optional(),
+        body: z.string().optional(),
+        body_truncated: z.boolean().optional(),
+        txid: z.string().optional(),
+        fee_sats: z.number().int().optional(),
+        price_sats: z.number().int().optional(),
+        max_price_sats: z.number().int().optional(),
+      },
+    },
+    (args: { url: string; max_price_sats?: number; max_body_chars?: number }) =>
+      guard(async () => {
+        const result = await paidFetch(opts.wallet, core, {
+          url: args.url,
+          maxPriceSats: args.max_price_sats,
+        });
+        const cap = args.max_body_chars ?? 50_000;
+        const truncated = result.body.length > cap;
+        return {
+          network: opts.network,
+          url: args.url,
+          status: result.status,
+          paid: result.paid,
+          content_type: result.contentType,
+          body: truncated ? result.body.slice(0, cap) : result.body,
+          body_truncated: truncated,
+          ...(result.payment && {
+            txid: result.payment.txid,
+            amount_sats: result.payment.amountSats,
+            fee_sats: result.payment.feeSats,
+            address: result.payment.address,
+          }),
         };
       }),
   );

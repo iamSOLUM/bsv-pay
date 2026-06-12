@@ -320,6 +320,40 @@ describe('sweep: every spend entry point broadcasts only gate-authorized transac
     }
   });
 
+  it('MCP paid_fetch tool', async () => {
+    const provider = crossCheckFunded();
+    const paywall = http.createServer((req, res) => {
+      if (!req.headers['x-bsv-payment']) {
+        res.writeHead(402, {
+          'x-bsv-payment-version': '1.0',
+          'x-bsv-payment-satoshis-required': '2500',
+          'x-bsv-payment-derivation-prefix': 'sweep-mcp-prefix',
+          'x-bsv-payment-address': RECIPIENT,
+        });
+        res.end('{"error":"payment_required"}');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('paid content');
+    });
+    await new Promise<void>((r) => paywall.listen(0, '127.0.0.1', r));
+    const port = (paywall.address() as AddressInfo).port;
+    const server = buildMcpServer({ network: 'main', wallet, provider });
+    const client = new Client({ name: 'sweep-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+    try {
+      const result = await client.callTool({
+        name: 'paid_fetch',
+        arguments: { url: `http://127.0.0.1:${port}/data`, max_price_sats: 3_000 },
+      });
+      expect((result.structuredContent as { ok: boolean; paid?: boolean }).paid).toBe(true);
+      expect(provider.broadcasts).toHaveLength(1);
+    } finally {
+      paywall.close();
+    }
+  });
+
   it('meta: the cross-check itself rejects an unledgered broadcast', async () => {
     const provider = crossCheckFunded();
     // a transaction built outside the gate: no allow decision exists for it

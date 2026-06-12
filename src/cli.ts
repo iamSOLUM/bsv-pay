@@ -9,6 +9,7 @@ import { cmdSend, type SendOptions } from './commands/send.js';
 import { cmdRequest, type RequestOptions } from './commands/request.js';
 import { cmdWatch } from './commands/watch.js';
 import { cmdDonate, type DonateOptions } from './commands/donate.js';
+import { cmdFetch, type FetchOptions } from './commands/fetch.js';
 import { cmdMcp } from './commands/mcp.js';
 import { cmdPolicyShow, cmdPolicyTest } from './commands/policy.js';
 import { cmdServe, type ServeOptions } from './commands/serve.js';
@@ -112,6 +113,13 @@ program
   .action(
     run<[string | undefined, DonateOptions]>((ctx, amount, opts) => cmdDonate(ctx, amount, opts)),
   );
+
+program
+  .command('fetch')
+  .description('Fetch a URL, automatically paying a BRC-105 402 paywall within policy')
+  .argument('<url>', 'http(s) URL to fetch')
+  .option('--max-price <amount>', 'refuse to pay more than this for the resource')
+  .action(run<[string, FetchOptions]>((ctx, url, opts) => cmdFetch(ctx, url, opts)));
 
 program
   .command('serve')

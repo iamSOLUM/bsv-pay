@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -195,6 +197,39 @@ describe('MCP key boundary (invariant 1 at the wire)', () => {
       'pay broadcast ambiguous',
       await capture(await connect(ambiguous), 'pay', { address: RECIPIENT, amount_sats: 5_000 }),
     );
+
+    // paid_fetch (M11): paywall paid, refused-after-payment, and capped paths
+    let acceptPayment = true;
+    const paywallServer = http.createServer((paywallReq, paywallRes) => {
+      if (!paywallReq.headers['x-bsv-payment'] || !acceptPayment) {
+        paywallRes.writeHead(402, {
+          'x-bsv-payment-version': '1.0',
+          'x-bsv-payment-satoshis-required': '1500',
+          'x-bsv-payment-derivation-prefix': 'kb-mcp-prefix',
+          'x-bsv-payment-address': RECIPIENT,
+        });
+        paywallRes.end('{"error":"payment_required"}');
+        return;
+      }
+      paywallRes.writeHead(200, { 'content-type': 'text/plain' });
+      paywallRes.end('clean agent goods');
+    });
+    await new Promise<void>((r) => paywallServer.listen(0, '127.0.0.1', r));
+    const paywallUrl = `http://127.0.0.1:${(paywallServer.address() as AddressInfo).port}/x`;
+    try {
+      expectClean('paid_fetch success', await capture(client, 'paid_fetch', { url: paywallUrl }));
+      acceptPayment = false;
+      expectClean(
+        'paid_fetch not redeemed',
+        await capture(client, 'paid_fetch', { url: paywallUrl }),
+      );
+      expectClean(
+        'paid_fetch max price exceeded',
+        await capture(client, 'paid_fetch', { url: paywallUrl, max_price_sats: 1 }),
+      );
+    } finally {
+      paywallServer.close();
+    }
 
     // final state check: policy status with a queued approval present
     expectClean(

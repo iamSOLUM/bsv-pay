@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -9,6 +11,7 @@ import {
   getHistory,
   createRequest,
   awaitPayment,
+  paidFetch,
   planSend,
   executeSend,
   send,
@@ -275,5 +278,53 @@ describe('core key boundary (invariant 1, executable proof)', () => {
         ),
       ),
     );
+  });
+
+  it('paidFetch (M11): success and not-redeemed results carry no key material', async () => {
+    let accept = true;
+    const paywall = http.createServer((req, res) => {
+      if (!req.headers['x-bsv-payment'] || !accept) {
+        res.writeHead(402, {
+          'x-bsv-payment-version': '1.0',
+          'x-bsv-payment-satoshis-required': '2000',
+          'x-bsv-payment-derivation-prefix': 'kb-prefix',
+          'x-bsv-payment-address': RECIPIENT,
+        });
+        res.end('{"error":"payment_required"}');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('clean goods');
+    });
+    await new Promise<void>((r) => paywall.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${(paywall.address() as AddressInfo).port}/x`;
+    try {
+      // the result includes rawTxHex via SendResult internals — must be clean
+      expectClean(
+        'paidFetch success',
+        await capture(() =>
+          paidFetch(wallet, { network: 'main', provider: fundedProvider() }, { url }),
+        ),
+      );
+      accept = false;
+      expectClean(
+        'paidFetch not redeemed (exit 10, carries txid)',
+        await capture(() =>
+          paidFetch(wallet, { network: 'main', provider: fundedProvider() }, { url }),
+        ),
+      );
+      expectClean(
+        'paidFetch max price exceeded',
+        await capture(() =>
+          paidFetch(
+            wallet,
+            { network: 'main', provider: fundedProvider() },
+            { url, maxPriceSats: 1 },
+          ),
+        ),
+      );
+    } finally {
+      paywall.close();
+    }
   });
 });

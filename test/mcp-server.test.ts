@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -86,7 +88,7 @@ function ledgeredSpendSats(): number {
 }
 
 describe('tool surface', () => {
-  it('exposes the six M10 tools with agent-facing descriptions', async () => {
+  it('exposes the M10+M11 tools with agent-facing descriptions', async () => {
     const { client } = await connectClient();
     const tools = (await client.listTools()).tools;
     const names = tools.map((t) => t.name).sort();
@@ -96,6 +98,7 @@ describe('tool surface', () => {
       'get_balance',
       'get_history',
       'get_policy_status',
+      'paid_fetch',
       'pay',
     ]);
     for (const tool of tools) {
@@ -295,6 +298,126 @@ describe('pay', () => {
     const decisions = readLedger('main').filter((e) => e.type === 'policy_decision');
     expect(decisions.filter((d) => d.decision === 'allow')).toHaveLength(2);
     expect(decisions.filter((d) => d.decision === 'deny')).toHaveLength(3);
+  });
+});
+
+describe('paid_fetch', () => {
+  async function startPaywall(priceSats: number): Promise<{ url: string; close(): void }> {
+    const server = http.createServer((req, res) => {
+      if (!req.headers['x-bsv-payment']) {
+        res.writeHead(402, {
+          'x-bsv-payment-version': '1.0',
+          'x-bsv-payment-satoshis-required': String(priceSats),
+          'x-bsv-payment-derivation-prefix': 'mcp-prefix',
+          'x-bsv-payment-address': RECIPIENT,
+        });
+        res.end('{"error":"payment_required"}');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"data":"agent goods"}');
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    return { url: `http://127.0.0.1:${port}/api`, close: () => server.close() };
+  }
+
+  it('pays a 402 within policy and returns the body + payment details', async () => {
+    const paywall = await startPaywall(1_200);
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+    });
+    try {
+      const fetched = await call(client, 'paid_fetch', {
+        url: paywall.url,
+        max_price_sats: 2_000,
+      });
+      expect(fetched).toMatchObject({
+        ok: true,
+        status: 200,
+        paid: true,
+        body: '{"data":"agent goods"}',
+        body_truncated: false,
+        amount_sats: 1_200,
+        address: RECIPIENT,
+      });
+      expect(typeof fetched.txid).toBe('string');
+      expect(provider.broadcasts).toHaveLength(1);
+      expect(readLedger('main').some((e) => e.type === 'send' && e.amount_sats === 1_200)).toBe(
+        true,
+      );
+    } finally {
+      paywall.close();
+    }
+  });
+
+  it('max_price_sats caps the fetch: structured ok:false, nothing spent', async () => {
+    const paywall = await startPaywall(5_000);
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+    });
+    try {
+      const refused = await call(client, 'paid_fetch', {
+        url: paywall.url,
+        max_price_sats: 1_000,
+      });
+      expect(refused).toMatchObject({
+        ok: false,
+        code: 8,
+        error: 'max_price_exceeded',
+        price_sats: 5_000,
+        max_price_sats: 1_000,
+      });
+      expect(provider.broadcasts).toHaveLength(0);
+    } finally {
+      paywall.close();
+    }
+  });
+
+  it('policy denial on the 402 spend is a structured result with the rule', async () => {
+    fs.writeFileSync(policyPath(), 'daily_budget_sats = 500');
+    const paywall = await startPaywall(1_200);
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+    });
+    try {
+      const denied = await call(client, 'paid_fetch', { url: paywall.url });
+      expect(denied).toMatchObject({
+        ok: false,
+        error: 'daily_budget_exceeded',
+        rule: 'daily_budget_sats',
+      });
+      expect(provider.broadcasts).toHaveLength(0);
+    } finally {
+      paywall.close();
+    }
+  });
+
+  it('a free resource costs nothing and respects max_body_chars', async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('x'.repeat(100));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const { client, provider } = await connectClient({
+      provider: fundProvider(new MockChainProvider()),
+    });
+    try {
+      const fetched = await call(client, 'paid_fetch', {
+        url: `http://127.0.0.1:${port}/big`,
+        max_body_chars: 10,
+      });
+      expect(fetched).toMatchObject({
+        ok: true,
+        paid: false,
+        body: 'xxxxxxxxxx',
+        body_truncated: true,
+      });
+      expect(provider.broadcasts).toHaveLength(0);
+    } finally {
+      server.close();
+    }
   });
 });
 
