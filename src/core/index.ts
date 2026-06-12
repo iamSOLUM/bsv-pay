@@ -49,4 +49,11 @@ export {
   type PaidFetchResult,
   type PaidFetchPayment,
 } from '../http402/client.js';
+export {
+  requirePayment,
+  type RequirePaymentOptions,
+  type PaymentReceipt,
+  type PaidRequest,
+  type PaidRequestHandler,
+} from '../http402/middleware.js';
 export type { LedgerEntry } from '../ledger.js';

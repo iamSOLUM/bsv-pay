@@ -11,6 +11,7 @@ import { cmdWatch } from './commands/watch.js';
 import { cmdDonate, type DonateOptions } from './commands/donate.js';
 import { cmdMcp } from './commands/mcp.js';
 import { cmdPolicyShow, cmdPolicyTest } from './commands/policy.js';
+import { cmdServe, type ServeOptions } from './commands/serve.js';
 import {
   cmdApprovalsApprove,
   cmdApprovalsList,
@@ -111,6 +112,14 @@ program
   .action(
     run<[string | undefined, DonateOptions]>((ctx, amount, opts) => cmdDonate(ctx, amount, opts)),
   );
+
+program
+  .command('serve')
+  .description('Run a demo BRC-105 paywall server: each request pays --price into this wallet')
+  .requiredOption('--price <amount>', 'price per request: bare satoshis, Nsats, or Nbsv')
+  .option('--port <n>', 'port to listen on', '8402')
+  .option('--body <text>', 'content to serve once paid')
+  .action(run<[ServeOptions]>((ctx, opts) => cmdServe(ctx, opts)));
 
 program
   .command('mcp')
