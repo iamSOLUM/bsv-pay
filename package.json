@@ -1,7 +1,7 @@
 {
-  "name": "bsv-pay",
+  "name": "bsv-pay-cli",
   "version": "0.2.0",
-  "description": "Developer-first CLI for sending and receiving micropayments on Bitcoin SV",
+  "description": "Developer-first CLI and agent payment toolkit for BSV micropayments: policy-governed spending, MCP server for AI agents, HTTP 402 paywalls",
   "license": "MIT",
   "author": "iamSOLUM",
   "repository": {
@@ -14,18 +14,22 @@
   "homepage": "https://github.com/iamSOLUM/bsv-pay#readme",
   "type": "module",
   "bin": {
-    "bsv-pay": "dist/cli.js"
+    "bsv-pay": "dist/cli.js",
+    "bsvpay": "dist/cli.js"
   },
   "exports": {
     "./core": {
       "types": "./dist/core/index.d.ts",
       "default": "./dist/core/index.js"
     },
+    "./cli": "./dist/cli.js",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "README.md"
+    "docs",
+    "README.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
@@ -41,14 +45,19 @@
     "e2e:local": "npm run build && node scripts/e2e-local.mjs",
     "demo:chain": "node scripts/demo-chain.mjs",
     "demo:two-agents": "npm run build && node examples/two-agents/run.mjs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm test && npm run build"
   },
   "keywords": [
     "bsv",
     "bitcoin-sv",
     "micropayments",
     "cli",
-    "wallet"
+    "wallet",
+    "mcp",
+    "ai-agents",
+    "402",
+    "brc-105",
+    "payments"
   ],
   "dependencies": {
     "@bsv/sdk": "^2.1.4",
