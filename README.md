@@ -42,7 +42,8 @@ Create or import a wallet. Refuses to overwrite an existing wallet without
 | `--import-wif` | Import a raw WIF key (single address, risk warning shown) |
 | `--force` | Overwrite an existing wallet |
 | `--no-encrypt` | Explicit opt-in to store the seed unencrypted (warned on every run) |
-| `--brc100` | BRC-100 wallet connection — not yet supported, clear error |
+| `--experimental-brc100` | EXPERIMENTAL: delegate custody to a BRC-100 wallet app — see below |
+| `--brc100` | Reserved; points you at `--experimental-brc100` |
 
 ### `bsv-pay balance`
 
@@ -263,10 +264,48 @@ the txid is in the error, take it up with the seller.
 **Compatibility, honestly**: this is a simplified BRC-105 profile — same
 headers, flow, and version, but the payment destination is an advertised
 fresh address rather than BRC-29 derived keys, and the envelope carries raw
-tx hex rather than AtomicBEEF, because full compliance requires BRC-100
-wallet custody. bsv-pay's fetch and serve interoperate with each other
-today; interop with external BRC-105 services (via the SDK's AuthFetch)
-lands with BRC-100 support (M12). Details in DECISIONS.md.
+tx hex rather than AtomicBEEF. bsv-pay's fetch and serve interoperate with
+each other today (including under BRC-100 custody, where the external
+wallet signs the 402 payment). Interop with external full-BRC-105 services
+needs the SDK's AuthFetch (BRC-103/104 mutual auth); that integration is
+deferred — there is no server-side implementation in our dependency set to
+test a handshake against, and we won't ship untestable code in the spend
+path. Details and the full reasoning in DECISIONS.md (M12).
+
+## External wallet custody — BRC-100 (EXPERIMENTAL)
+
+```bash
+bsv-pay init --experimental-brc100 --testnet
+```
+
+Instead of a local seed, bsv-pay connects to a BRC-100 wallet app running
+on your machine (e.g. Metanet Desktop, which serves the wallet JSON-API on
+`localhost:3321`; override with `BSV_PAY_BRC100_URL`). Keys live in the
+wallet app and **never** touch bsv-pay; bsv-pay constructs payment actions
+and the app funds, signs, and broadcasts them — asking for your approval in
+its own UI as it sees fit.
+
+**The policy engine stays in front.** Every spend still passes the same
+`authorizeSpend()` gate — budgets, rate limits, allow/denylists, approval
+queue — *before* the wallet app is ever asked, and every decision is
+ledgered. The wallet app is a second pair of hands, not a way around your
+policy. That layering is the point: the app protects the keys, bsv-pay
+governs the spending.
+
+What works under BRC-100 custody today, and what doesn't:
+
+| Surface | Status |
+| --- | --- |
+| `send`, `donate`, `fetch` (402 buyer), MCP `pay` + `paid_fetch` | ✅ governed by policy, ledgered, exact fee reported |
+| `balance` (one spendable total from the app), `history`, `policy`, `approvals` | ✅ |
+| `request`, `watch`, `serve` / `requirePayment()`, MCP request tools | ❌ exit 2 `brc100_receive_not_supported` — receive in the wallet app itself |
+
+Receiving refuses by design rather than half-working: an address issued by
+bsv-pay would be invisible to the wallet app, so funds sent there could not
+be seen or spent from it. Use the app's own receive screen, or a local-seed
+wallet for the selling side.
+
+Setup and a step-by-step verification walkthrough: [docs/BRC100.md](docs/BRC100.md).
 
 ## Exit codes (stable)
 

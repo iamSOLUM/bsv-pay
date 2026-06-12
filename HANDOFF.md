@@ -1,10 +1,10 @@
-# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-12, post-M11)
+# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-12, post-M12 build)
 
 For a fresh session: read CLAUDE.md (invariants — they override everything), then
 AGENT-PHASE2.md (roadmap M8–M13), DECISIONS.md, this file. Run the verification
 suite once before touching code: `npm test && npm run lint && npm run format:check
-&& npm run build && npm run e2e:local` — all green at handoff (236 unit tests / 28
-files; e2e has 10 steps).
+&& npm run build && npm run e2e:local` — all green at handoff (262 unit tests / 29
+files; e2e has 11 steps).
 
 ## Done and owner-approved
 
@@ -61,41 +61,53 @@ files; e2e has 10 steps).
     balance/ledger, max-price cap, and the third fetch blocked by the daily
     budget.
 
-## Next action: M12 — BRC-100 custody (wait for the owner's go)
+## M12 — BRC-100 custody: BUILT 2026-06-12, owner verification PENDING
 
-Replace the `init --brc100` stub (exit 2 `brc100_not_supported`,
-`src/wallet/brc100.ts`) with a real connection via @bsv/sdk's wallet client
-interface (BSV Desktop / Metanet Desktop expose it; wallet-toolbox documents
-it). Requirements from AGENT-PHASE2.md, plus the owner's standing
-instructions (given 2026-06-12 when ratifying M11):
+Built per the owner's standing instructions, all three honored:
 
-1. **The policy engine stays enforced IN FRONT of external custody — that
-   layering is the product.** An external wallet signs; bsv-pay still decides.
-   Invariant 2 applies unchanged: every spend through `authorizeSpend()`, no
-   backend can route around the gate, and the policy-gate sweep must cover the
-   BRC-100 spend path like every other.
-2. **When manual verification needs external wallet software, produce a
-   noob-proof setup guide for the owner**: which wallet to install, where to
-   download it from, how to configure it for testnet, and the exact
-   verification loop to run, step by step. Do not assume prior familiarity
-   with BSV Desktop / Metanet Desktop.
-3. **Prefer the `--experimental-brc100` escape hatch over stalling** if the
-   external-wallet protocol fights back: ship behind the flag with documented
-   limitations rather than blocking the milestone.
+1. **Policy in front of external custody — done and proven.** The backend
+   union (`local | brc100`) lives behind the same module-private WeakMap as
+   the signing wallet; `planSend` authorizes before knowing which backend
+   pays, `executeSend` consumes the authorization before branching, and the
+   external wallet is reachable only via `Brc100Wallet.payToAddress` from
+   `executeSend`. The choke-point scan gained rules for `createAction`/
+   `payToAddress`; the sweep gained a cross-checking mock wallet app that
+   refuses unledgered actions; `test/brc100.test.ts` proves denials/queues
+   never reach the wallet app and that its key never crosses the boundary.
+2. **Noob-proof owner guide: `docs/BRC100.md`** — install (Metanet Desktop),
+   testnet switch, connect, and a 6-step verification loop with expected
+   exit codes, plus a zero-install path (e2e step [11/11] runs the whole
+   custody loop against a mock desktop wallet: `npm run e2e:local`).
+3. **The experimental escape hatch was used**: `init --experimental-brc100`
+   works; plain `--brc100` still exits 2 pointing at it. Documented
+   limitation (README support matrix + DECISIONS M12): receive-side
+   surfaces (`request`/`watch`/`serve`/`requirePayment`/MCP request tools)
+   refuse with exit 2 `brc100_receive_not_supported` — an address issued by
+   bsv-pay would be invisible to the wallet app, stranding funds. Spending
+   (send/donate/fetch/MCP pay/paid_fetch), balance (via the app's
+   listOutputs), history, policy, and approvals all work.
 
-Technical notes carried forward:
-- All commands and MCP tools must work identically with either backend; the
-  backend is a wallet-provider decision invisible above core (invariant 1:
-  key material — now including external-wallet handles — never crosses out).
-- M12 is also the moment to revisit full BRC-105 compliance: with a BRC-100
-  wallet, the 402 client can switch to the SDK's AuthFetch (BRC-29 derivation,
-  AtomicBEEF, mutual auth) for external services, closing the README interop
-  caveat. Keep the simplified-profile serve/fetch working for local-seed
-  wallets.
-- M12 touches custody: small, isolated commits for human review; testnet/mock
-  only, as always.
+Other M12 facts a next session needs:
+- Errors map onto stable families: 3 insufficient (app verdict), 5
+  `brc100_action_rejected` (human declined in the app, nothing spent), 6
+  `brc100_broadcast_unknown` (ledgered `unknown`, counts against session
+  budget), 7 `brc100_unreachable`, 2 `brc100_network_mismatch` (invariant 7).
+- Exact fee/size/change decode from the app's AtomicBEEF; degrade to
+  txid-only rather than lose a broadcast payment. Dry runs never contact
+  the app (estimated fee, `fee_estimated: true`, empty txid).
+- **Full BRC-105 via AuthFetch: revisited and DEFERRED** (DECISIONS M12,
+  bottom bullet): no server-side BRC-103/104 exists in our dependency set
+  to test against, and gating AuthFetch needs a second spend door with
+  identity-key recipients that bypass address-based lists. The README
+  interop caveat was narrowed (custody half closed), not removed. Clean
+  future milestone once a testable BRC-104 counterparty exists.
+- Connection: SDK `HTTPWalletJSON`, default `http://localhost:3321`,
+  `BSV_PAY_BRC100_URL` override, originator `bsv-pay`. Injection seam for
+  tests/embedders: `CoreOptions.brc100` (mirrors `provider`).
+- The owner has NOT yet run the manual external-wallet loop; the mock-based
+  proofs are green. Offer the docs/BRC100.md walkthrough before M13 ships.
 
-## After that: M13 — the finale, with its own checkpoint
+## Next: M13 — the finale, with its own checkpoint
 
 M13 (two-agent demo, the "Agentic payments" guide, README, v0.2.0 bump +
 CHANGELOG, npm publish as `bsv-pay-cli` + `bsvpay` alias) closes Phase 2 and
