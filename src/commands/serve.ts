@@ -11,6 +11,7 @@ import { obtainPassphrase } from '../wallet/wallet.js';
 export interface ServeOptions {
   price: string;
   port?: string;
+  host?: string;
   body?: string;
 }
 
@@ -68,12 +69,13 @@ export async function cmdServe(
     });
   });
 
+  const host = opts.host ?? '127.0.0.1'; // localhost-only unless explicitly exposed
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, () => resolve());
+    server.listen(port, host, () => resolve());
   });
   process.stderr.write(
-    `bsv-pay paywall on http://127.0.0.1:${port} — ${formatSats(priceSats)} per request, ` +
+    `bsv-pay paywall on http://${host}:${port} — ${formatSats(priceSats)} per request, ` +
       `paid into this ${ctx.network === 'test' ? 'testnet' : 'mainnet'} wallet. Ctrl+C stops.\n`,
   );
 

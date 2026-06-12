@@ -126,6 +126,7 @@ program
   .description('Run a demo BRC-105 paywall server: each request pays --price into this wallet')
   .requiredOption('--price <amount>', 'price per request: bare satoshis, Nsats, or Nbsv')
   .option('--port <n>', 'port to listen on', '8402')
+  .option('--host <host>', 'interface to bind (default localhost-only)', '127.0.0.1')
   .option('--body <text>', 'content to serve once paid')
   .action(run<[ServeOptions]>((ctx, opts) => cmdServe(ctx, opts)));
 

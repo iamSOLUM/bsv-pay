@@ -123,10 +123,10 @@ const env = {
 
 // async (NOT spawnSync): the mock server lives in this process, so blocking
 // the event loop would starve the very API the CLI is calling.
-function cli(args, { allowExit = [0] } = {}) {
+function cli(args, { allowExit = [0], env: envOverride } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args, '--testnet', '--json'], {
-      env,
+      env: envOverride ?? env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -368,8 +368,8 @@ try {
     const tools = (await mcp.listTools()).tools.map((t) => t.name).sort();
     check(
       tools.join(',') ===
-        'await_payment,create_payment_request,get_balance,get_history,get_policy_status,pay',
-      'six tools, no unlock/approve/secret surface',
+        'await_payment,create_payment_request,get_balance,get_history,get_policy_status,paid_fetch,pay',
+      'seven tools, no unlock/approve/secret surface',
     );
 
     const tool = async (name, args = {}) =>
@@ -452,6 +452,72 @@ try {
     await mcp.close();
   }
   check(mcpStderr.includes('bsv-pay MCP server ready'), 'server banner went to stderr, not stdout');
+
+  // 10. M11 HTTP 402: a REAL `bsv-pay serve` paywall (its own wallet + state
+  //     dir = the seller) and the buyer's `bsv-pay fetch`, two processes over
+  //     the shared mock chain. Policy still governs the buyer's 402 spends.
+  //     Buyer budget so far today: 9700 + 800 (MCP pay) = 10500 of 12000.
+  console.error('[10/10] HTTP 402: serve sells, fetch buys, policy governs');
+  credit(init.address, 10_000, 0); // top up the buyer; budget, not funds, is the limiter
+
+  const SELLER_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bsv-pay-e2e-seller-'));
+  const sellerEnv = { ...env, BSV_PAY_HOME: SELLER_HOME };
+  const PAYWALL_PORT = 18_000 + Math.floor(Math.random() * 2_000);
+  const PAYWALL_URL = `http://127.0.0.1:${PAYWALL_PORT}/dataset`;
+  let serveProc;
+  try {
+    const sellerInit = (await cli(['init'], { env: sellerEnv })).objects[0];
+    check(sellerInit.ok === true, 'seller wallet created in its own state dir');
+
+    serveProc = spawn(
+      process.execPath,
+      [CLI, 'serve', '--price', '700', '--port', String(PAYWALL_PORT), '--body', 'premium dataset', '--testnet'],
+      { env: sellerEnv, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let serveStderr = '';
+    serveProc.stderr.on('data', (c) => (serveStderr += c));
+    for (let i = 0; i < 100 && !serveStderr.includes('paywall on'); i++) await sleep(100);
+    check(serveStderr.includes('paywall on'), 'serve started and announced itself on stderr');
+
+    // buy: within budget (700 of the 1500 left) -> paid and served
+    const buy1 = (await cli(['fetch', PAYWALL_URL])).objects[0];
+    check(buy1.ok === true && buy1.status === 200 && buy1.paid === true, 'fetch paid the 402 and got the content');
+    check(buy1.amount_sats === 700 && /^[0-9a-f]{64}$/.test(buy1.txid), `fetch paid 700 sats (txid ${buy1.txid?.slice(0, 12)}…)`);
+    check(JSON.parse(buy1.body).message === 'premium dataset', 'the paid body is the seller’s content');
+    check(
+      ledgerEntries().some((e) => e.type === 'send' && e.amount_sats === 700 && e.memo?.startsWith('402 http://')),
+      'buyer ledgered the 402 spend with its URL memo',
+    );
+
+    const sellerLedger = () =>
+      fs.readFileSync(path.join(SELLER_HOME, 'ledger-testnet.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const sellerBal1 = (await cli(['balance'], { env: sellerEnv })).objects[0];
+    check(sellerBal1.unconfirmed_sats === 700, 'seller balance shows the sale (700 sats)');
+    check(
+      sellerLedger().some((e) => e.type === 'receive' && e.amount_sats === 700 && e.memo?.startsWith('402 sale')),
+      'seller ledgered the receive with a 402 sale memo',
+    );
+
+    // capped: --max-price refuses BEFORE paying
+    const capped = (await cli(['fetch', PAYWALL_URL, '--max-price', '500'], { allowExit: [8] })).objects[0];
+    check(capped.error === 'max_price_exceeded' && capped.price_sats === 700, 'max-price caps the fetch before any spend');
+
+    // second buy: still within budget (800 left)
+    const buy2 = (await cli(['fetch', PAYWALL_URL])).objects[0];
+    check(buy2.ok === true && buy2.paid === true, 'second fetch paid (budget had 800 left)');
+
+    // third buy: the daily budget says no -> structured denial, ledgered deny
+    const blocked = (await cli(['fetch', PAYWALL_URL], { allowExit: [8] })).objects[0];
+    check(
+      blocked.error === 'daily_budget_exceeded' && blocked.remaining_sats === 100,
+      'third fetch BLOCKED by the daily budget (100 sats left < 700)',
+    );
+    const sellerBal2 = (await cli(['balance'], { env: sellerEnv })).objects[0];
+    check(sellerBal2.unconfirmed_sats === 1_400, 'seller earned exactly the two allowed sales (1,400 sats)');
+  } finally {
+    if (serveProc) serveProc.kill();
+    fs.rmSync(SELLER_HOME, { recursive: true, force: true });
+  }
 } finally {
   server.close();
   fs.rmSync(HOME, { recursive: true, force: true });

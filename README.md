@@ -105,10 +105,26 @@ Reviews and resolves payments queued by `approval_threshold_sats`.
 a real terminal and the approval secret. There is deliberately no flag or
 environment variable for the secret — see the policy section below.
 
+### `bsv-pay fetch <url>`
+
+Fetch a URL, automatically paying a BRC-105 `402 Payment Required` response
+within policy. `--max-price <amount>` refuses to pay more than that for this
+fetch, regardless of remaining budget. The body is the machine output (raw
+on stdout, or in `--json`); payment details go to stderr. Free resources
+cost nothing. See "Machine-to-machine payments" below.
+
+### `bsv-pay serve --price <amount>`
+
+A demo BRC-105 paywall: every request pays `--price` into this wallet before
+it gets the content (`--port`, default 8402; `--host`, default localhost-only;
+`--body` for the content). The real product is the importable
+`requirePayment()` middleware this wraps — see below.
+
 ### `bsv-pay mcp`
 
-Serves MCP tools over stdio for AI agents (`pay`, `create_payment_request`,
-`await_payment`, `get_balance`, `get_history`, `get_policy_status`). The
+Serves MCP tools over stdio for AI agents (`pay`, `paid_fetch`,
+`create_payment_request`, `await_payment`, `get_balance`, `get_history`,
+`get_policy_status`). The
 wallet unlocks once at startup — `BSV_PAY_PASSPHRASE` or a terminal prompt —
 and there is deliberately no unlock, approve, or key tool, so the connected
 agent never holds a secret. Every `pay` goes through the same policy gate as
@@ -170,7 +186,7 @@ daily_budget_sats = 1000000
 claude mcp add bsv-pay --env BSV_PAY_PASSPHRASE=your-passphrase -- bsv-pay mcp --testnet
 ```
 
-The server process holds the passphrase; Claude gets six tools and nothing
+The server process holds the passphrase; Claude gets seven tools and nothing
 else — no unlock, no approvals, no keys, no way to raise its own limits.
 Policy edits apply on server restart (session budgets reset with the
 process; daily budgets never reset — they are recomputed from the ledger).
@@ -207,6 +223,51 @@ did and what it tried to do. The same loop runs end-to-end in CI against a
 local mock chain (`npm run e2e:local`, step 9), so none of the above
 depends on live coins to verify.
 
+## Machine-to-machine payments — HTTP 402 (BRC-105)
+
+Buy:
+
+```bash
+bsv-pay fetch https://seller.example/dataset --max-price 1000
+```
+
+On a `402 Payment Required`, fetch reads the BRC-105 headers, pays within
+policy (the same gate, budgets, and ledger as `send`), retries with the
+`x-bsv-payment` envelope, and prints the content. Agents get the same flow
+as the MCP `paid_fetch` tool.
+
+Sell — either the demo server:
+
+```bash
+bsv-pay serve --price 50sats --port 8402 --body "premium data"
+```
+
+or the importable middleware (Express-compatible, zero dependencies):
+
+```js
+import { openWallet, requirePayment } from 'bsv-pay/core';
+
+const wallet = await openWallet({ network: 'test' });
+const gate = requirePayment({ network: 'test', wallet, priceSats: 50 });
+app.use(gate); // req.bsvPayment = { txid, amountSats, address, … } once paid
+```
+
+Each 402 quotes a **fresh wallet address** with a single-use nonce prefix
+(10-minute TTL); the seller confirms the payment on its own chain view
+before serving and ledgers the receive. The buyer broadcasts through the
+policy gate, so a 402 spend can be denied (exit 8), capped (`--max-price`,
+exit 8 before any spend), or queued for approval (exit 9) exactly like any
+other payment. Exit 10 means you paid but the server refused the content —
+the txid is in the error, take it up with the seller.
+
+**Compatibility, honestly**: this is a simplified BRC-105 profile — same
+headers, flow, and version, but the payment destination is an advertised
+fresh address rather than BRC-29 derived keys, and the envelope carries raw
+tx hex rather than AtomicBEEF, because full compliance requires BRC-100
+wallet custody. bsv-pay's fetch and serve interoperate with each other
+today; interop with external BRC-105 services (via the SDK's AuthFetch)
+lands with BRC-100 support (M12). Details in DECISIONS.md.
+
 ## Exit codes (stable)
 
 | Code | Meaning |
@@ -221,6 +282,7 @@ depends on live coins to verify.
 | 7 | Wallet locked / bad passphrase (also: wrong approval secret) |
 | 8 | Spend limit exceeded / denied by policy (`error` says which rule) |
 | 9 | Queued for human approval (`approval_id` in `--json`; see `bsv-pay approvals`) |
+| 10 | 402 payment broadcast but the server refused the content (`txid` in the error) |
 
 ## Scripting
 

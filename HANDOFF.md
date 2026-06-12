@@ -1,10 +1,10 @@
-# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-11, post-M10 build)
+# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-12, post-M11)
 
 For a fresh session: read CLAUDE.md (invariants — they override everything), then
 AGENT-PHASE2.md (roadmap M8–M13), DECISIONS.md, this file. Run the verification
 suite once before touching code: `npm test && npm run lint && npm run format:check
-&& npm run build && npm run e2e:local` — all green at handoff (215 unit tests / 26
-files; e2e has 9 steps).
+&& npm run build && npm run e2e:local` — all green at handoff (236 unit tests / 28
+files; e2e has 10 steps).
 
 ## Done and owner-approved
 
@@ -23,36 +23,61 @@ files; e2e has 9 steps).
   - Approvals: `bsv-pay approvals list|approve|reject|set-secret`; the approval
     secret is a second secret (argon2id hash only, TTY-only prompts, no env/flag
     path, wallet passphrase rejected, fail-closed). Self-approval attack is tested.
-- Judgment calls are all recorded in DECISIONS.md (M8 and M9 sections).
+- **M10 — MCP server**, hard checkpoint CLEARED by the owner on 2026-06-12 (they
+  connected it to Claude Code and ran the budget demo personally: allowance →
+  pay → blocked over budget → "ignore your budget" refused → approval via the
+  secret → balance reconciled). `bsv-pay mcp` on `@modelcontextprotocol/sdk`
+  1.29.0; tools over core; structured `{ok:false, code, error, ...data}`
+  results; no unlock/approve/secret tool (asserted by test); unlock once at
+  startup. Owner requirement from plan approval: concurrent pays cannot race
+  budgets → `core/spend-lock.ts` single-flights decide→broadcast→ledger,
+  proven by `test/spend-concurrency.test.ts` + the MCP racing-pays test.
+  `scripts/demo-chain.mjs` (`npm run demo:chain`) is a standalone mock chain
+  with a faucet for interactive demos — public testnet faucets are dead.
+- **M11 — HTTP 402 (BRC-105 simplified profile)**, built 2026-06-12. Researched
+  first: full BRC-105 needs BRC-103/104 mutual auth + BRC-29/AtomicBEEF, which
+  need BRC-100 custody — that is M12; the SDK's AuthFetch becomes usable then.
+  Shipped now (rationale + divergences in DECISIONS.md M11):
+  - `src/http402/`: protocol (BRC-105 headers, `x-bsv-payment-address`
+    extension, raw-hex envelope), client (`paidFetch` — pays via core `send()`,
+    `maxPriceSats` pre-gate cap, exit 10 `payment_not_redeemed` carries the
+    txid), middleware (`requirePayment` — Express-compatible, zero deps, fresh
+    address + single-use TTL'd nonce per quote, confirms on its own chain view
+    via `awaitPayment` which ledgers the receive; buyer broadcasts, seller
+    never signs/broadcasts/fetches).
+  - Surfaces: `bsv-pay fetch <url> [--max-price]` (body = stdout, payment =
+    stderr), `bsv-pay serve --price --port --host --body`, MCP `paid_fetch`
+    (max_price_sats + max_body_chars), `paidFetch`/`requirePayment` exported
+    from `bsv-pay/core`.
+  - Obligations met: core `paidFetch` AND MCP `paid_fetch` are sweep rows in
+    `test/policy-gate.test.ts`; the scan's only allowlist change is `fetch(` in
+    `http402/client.ts`; key-boundary proofs (core + MCP) cover paid/refused/
+    capped paths incl. `SendResult.rawTxHex` (new, additive, public data).
+  - e2e step [10/10]: real `bsv-pay serve` (own wallet + state dir) sells to
+    the buyer's real `bsv-pay fetch` over the mock chain — paid fetch, seller
+    balance/ledger, max-price cap, and the third fetch blocked by the daily
+    budget.
 
-## Next action: the M10 HARD checkpoint — owner demo, then M11
+## Next action: M12 — BRC-100 custody (no hard checkpoint gate)
 
-M10 is built, tested, and committed. Per the kickoff protocol the next step is
-NOT M11: the owner personally connects the server to Claude Code and runs the
-demo — check allowance → pay → get BLOCKED over budget → approve the queued
-payment — before M11 may start. Suggested demo setup (testnet/mock only):
-`claude mcp add bsv-pay --env BSV_PAY_PASSPHRASE=… -- bsv-pay mcp --testnet`,
-with a small `policy.toml` (see the README's "Using bsv-pay with Claude Code").
+Replace the `init --brc100` stub (exit 2 `brc100_not_supported`,
+`src/wallet/brc100.ts`) with a real connection via @bsv/sdk's wallet client
+interface (BSV Desktop / Metanet Desktop expose it; wallet-toolbox documents
+it). Requirements from AGENT-PHASE2.md:
 
-What shipped (all obligations met; details in DECISIONS.md M10):
-
-- `bsv-pay mcp` — stdio server on `@modelcontextprotocol/sdk` 1.29.0. Six tools
-  over core: `pay`, `create_payment_request`, `await_payment`, `get_balance`,
-  `get_history`, `get_policy_status`. No unlock/approve/secret/key tool exists
-  (asserted by test); unlock happens once at startup (env passphrase or TTY).
-- Every `pay` goes through core `send()` → the policy gate. The MCP entry point
-  is a row in the `test/policy-gate.test.ts` sweep (M11 still owes `paidFetch`).
-- **Owner requirement (added at plan approval): concurrent pays cannot race the
-  budget.** `core/spend-lock.ts` single-flights decide→broadcast→ledger per
-  state dir + network; `test/spend-concurrency.test.ts` (core) and the racing-
-  pays test in `test/mcp-server.test.ts` (MCP) prove ledgered spend never
-  exceeds the budget.
-- Denials/queues are structured results: `{ok:false, code, error, message,
-  ...data}` (`remaining_sats`, `approval_id`, …); `isError` only for bugs.
-- `test/mcp-key-boundary.test.ts` sweeps full wire-level results for every
-  secret representation (incl. approval-secret hash + salt).
-- e2e step [9/9] spawns the real binary over stdio and replays the checkpoint
-  demo loop. README has "Using bsv-pay with Claude Code" + the worked session.
+- Custody model: keys live in the external wallet; bsv-pay constructs actions
+  and requests signatures. The policy engine still runs as a second layer in
+  front — invariant 2 applies unchanged.
+- All commands and MCP tools work identically with either backend; the backend
+  is a wallet-provider decision invisible above core.
+- If the external-wallet protocol proves unstable, ship behind
+  `--experimental-brc100` with documented limitations rather than blocking.
+- M12 is also the moment to revisit full BRC-105 compliance: with a BRC-100
+  wallet, the 402 client can switch to the SDK's AuthFetch (BRC-29 derivation,
+  AtomicBEEF, mutual auth) for external services. Keep our simplified-profile
+  serve/fetch working for local-seed wallets.
+- Hard checkpoints existed after M9 and M10 only — but M12 touches custody, so
+  keep diffs small/isolated for human review, and testnet/mock only as always.
 
 ## In-flight notes
 
