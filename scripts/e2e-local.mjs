@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
-import { PrivateKey, Transaction, Utils } from '@bsv/sdk';
+import { LockingScript, MerklePath, P2PKH, PrivateKey, Transaction, Utils } from '@bsv/sdk';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -518,9 +518,203 @@ try {
     if (serveProc) serveProc.kill();
     fs.rmSync(SELLER_HOME, { recursive: true, force: true });
   }
+
+  // 11. M12 BRC-100 custody (experimental): the real CLI delegates signing
+  //     to a mock "desktop wallet" speaking the BRC-100 JSON-API over real
+  //     HTTP, in its own state dir. The wallet app signs and broadcasts to
+  //     the same mock chain; bsv-pay's policy gate still decides every
+  //     spend BEFORE the wallet app is asked, and receive-side refuses.
+  console.error('[11/11] BRC-100 custody: external wallet signs, policy still governs');
+  const brc100Wallet = startMockBrc100Wallet(apiUrl);
+  await new Promise((resolve) => brc100Wallet.server.listen(0, '127.0.0.1', resolve));
+  const BRC100_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bsv-pay-e2e-brc100-'));
+  const brc100Env = {
+    ...env,
+    BSV_PAY_HOME: BRC100_HOME,
+    BSV_PAY_BRC100_URL: `http://127.0.0.1:${brc100Wallet.server.address().port}`,
+  };
+  try {
+    brc100Wallet.fund(20_000);
+
+    const exInit = (await cli(['init', '--experimental-brc100'], { env: brc100Env })).objects[0];
+    check(
+      exInit.ok === true && exInit.backend === 'brc100' && /^0[23][0-9a-f]{64}$/.test(exInit.identity_key),
+      'BRC-100 wallet connected (identity key shown, nothing local to leak)',
+    );
+    const exFile = JSON.parse(fs.readFileSync(path.join(BRC100_HOME, 'wallet-testnet.json'), 'utf8'));
+    check(
+      exFile.backend === 'brc100' && exFile.secret === undefined && exFile.cipher === undefined,
+      'delegating wallet file stores no secret',
+    );
+
+    const exBal1 = (await cli(['balance'], { env: brc100Env })).objects[0];
+    check(
+      exBal1.backend === 'brc100' && exBal1.confirmed_sats === 20_000,
+      'balance comes from the wallet app (20,000 sats)',
+    );
+
+    fs.writeFileSync(path.join(BRC100_HOME, 'policy.toml'), 'daily_budget_sats = 6000\n');
+
+    const exSend = (await cli(['send', RETURN_ADDRESS, '5000', 'brc100 e2e', '--yes'], { env: brc100Env })).objects[0];
+    check(
+      exSend.ok === true && exSend.backend === 'brc100' && /^[0-9a-f]{64}$/.test(exSend.txid),
+      `send went through the wallet app within policy (txid ${exSend.txid?.slice(0, 12)}…)`,
+    );
+    check(exSend.fee_sats === 10 && exSend.fee_estimated === undefined, 'exact fee decoded from the wallet app tx');
+    check(
+      (utxosByAddress.get(RETURN_ADDRESS) ?? []).some((u) => u.tx_hash === exSend.txid && u.value === 5000),
+      'the wallet app broadcast a real transaction to the chain',
+    );
+    check(brc100Wallet.state.createActionCalls === 1, 'exactly one action requested from the wallet app');
+
+    const exDenied = (await cli(['send', RETURN_ADDRESS, '5000', '--yes'], { env: brc100Env, allowExit: [8] })).objects[0];
+    check(
+      exDenied.error === 'daily_budget_exceeded' && exDenied.remaining_sats === 1000,
+      'over-budget send denied with 1,000 sats remaining',
+    );
+    check(brc100Wallet.state.createActionCalls === 1, 'the denied spend never reached the wallet app');
+
+    const exLedger = fs.readFileSync(path.join(BRC100_HOME, 'ledger-testnet.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l));
+    check(
+      exLedger.some((e) => e.type === 'policy_decision' && e.decision === 'allow' && e.amount_sats === 5000) &&
+        exLedger.some((e) => e.type === 'policy_decision' && e.decision === 'deny' && e.rule === 'daily_budget_sats') &&
+        exLedger.some((e) => e.type === 'send' && e.txid === exSend.txid && e.fee_sats === 10),
+      'allow, deny, and the send are all ledgered',
+    );
+
+    const exReq = (await cli(['request', '1000'], { env: brc100Env, allowExit: [2] })).objects[0];
+    check(exReq.error === 'brc100_receive_not_supported', 'receive-side refuses under external custody');
+
+    const exBal2 = (await cli(['balance'], { env: brc100Env })).objects[0];
+    check(exBal2.confirmed_sats === 20_000 - 5000 - 10, 'balance reconciles through the wallet app (14,990 sats)');
+  } finally {
+    brc100Wallet.server.close();
+    fs.rmSync(BRC100_HOME, { recursive: true, force: true });
+  }
 } finally {
   server.close();
   fs.rmSync(HOME, { recursive: true, force: true });
+}
+
+// ------------------------------------------------- mock BRC-100 wallet app
+/**
+ * A minimal "desktop wallet" speaking the BRC-100 JSON-API shape the SDK's
+ * HTTPWalletJSON client expects (POST /<call> with JSON args). It holds its
+ * own testnet key, funds/signs createAction requests from an in-memory UTXO
+ * set, and broadcasts to the mock chain like a real wallet app would. Its
+ * key never leaves this function — bsv-pay only ever sees txids and amounts.
+ */
+function startMockBrc100Wallet(chainApiUrl) {
+  const key = PrivateKey.fromRandom();
+  const address = key.toAddress('testnet');
+  const FEE = 10;
+  let utxos = []; // { tx, vout, satoshis }
+  const state = { createActionCalls: 0 };
+
+  function fund(satoshis) {
+    const fundTx = new Transaction();
+    fundTx.addOutput({ lockingScript: new P2PKH().lock(address), satoshis });
+    fundTx.merklePath = new MerklePath(800_000, [[{ offset: 0, hash: fundTx.id('hex'), txid: true }]]);
+    utxos.push({ tx: fundTx, vout: 0, satoshis });
+  }
+
+  async function createAction(args) {
+    state.createActionCalls++;
+    const outs = args.outputs ?? [];
+    const outputSum = outs.reduce((s, o) => s + o.satoshis, 0);
+    const selected = [];
+    let total = 0;
+    for (const u of [...utxos].sort((a, b) => b.satoshis - a.satoshis)) {
+      if (total >= outputSum + FEE) break;
+      selected.push(u);
+      total += u.satoshis;
+    }
+    if (total < outputSum + FEE) {
+      const err = new Error('insufficient funds');
+      err.walletCode = 7;
+      err.totalSatoshisNeeded = outputSum + FEE;
+      err.moreSatoshisNeeded = outputSum + FEE - total;
+      throw err;
+    }
+    const tx = new Transaction();
+    for (const u of selected) {
+      tx.addInput({
+        sourceTransaction: u.tx,
+        sourceOutputIndex: u.vout,
+        unlockingScriptTemplate: new P2PKH().unlock(key, 'all', false, u.satoshis, new P2PKH().lock(address)),
+      });
+    }
+    for (const o of outs) {
+      tx.addOutput({ lockingScript: LockingScript.fromHex(o.lockingScript), satoshis: o.satoshis });
+    }
+    const change = total - outputSum - FEE;
+    if (change > 0) tx.addOutput({ lockingScript: new P2PKH().lock(address), satoshis: change });
+    await tx.sign();
+    const broadcast = await fetch(`${chainApiUrl}/test/tx/raw`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ txhex: tx.toHex() }),
+    });
+    if (!broadcast.ok) throw new Error('mock chain rejected the wallet broadcast');
+    const beef = tx.toAtomicBEEF();
+    utxos = utxos.filter((u) => !selected.includes(u));
+    if (change > 0) {
+      tx.merklePath = new MerklePath(800_001, [[{ offset: 0, hash: tx.id('hex'), txid: true }]]);
+      utxos.push({ tx, vout: outs.length, satoshis: change });
+    }
+    return { txid: tx.id('hex'), tx: beef };
+  }
+
+  const walletServer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', async () => {
+      const reply = (code, obj) => {
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      try {
+        const args = body ? JSON.parse(body) : {};
+        switch (req.url.replace(/^\//, '')) {
+          case 'getVersion':
+            return reply(200, { version: 'mock-desktop 1.0.0' });
+          case 'getNetwork':
+            return reply(200, { network: 'testnet' });
+          case 'isAuthenticated':
+          case 'waitForAuthentication':
+            return reply(200, { authenticated: true });
+          case 'getPublicKey':
+            return reply(200, { publicKey: key.toPublicKey().toString() });
+          case 'listOutputs':
+            return reply(200, {
+              totalOutputs: utxos.length,
+              outputs: utxos.map((u) => ({
+                satoshis: u.satoshis,
+                spendable: true,
+                outpoint: `${u.tx.id('hex')}.${u.vout}`,
+              })),
+            });
+          case 'createAction':
+            return reply(200, await createAction(args));
+          default:
+            return reply(404, { message: `mock wallet: no route for ${req.url}` });
+        }
+      } catch (e) {
+        if (e.walletCode === 7) {
+          return reply(400, {
+            isError: true,
+            code: 7,
+            message: e.message,
+            totalSatoshisNeeded: e.totalSatoshisNeeded,
+            moreSatoshisNeeded: e.moreSatoshisNeeded,
+          });
+        }
+        reply(500, { message: e.message });
+      }
+    });
+  });
+  return { server: walletServer, fund, state, address };
 }
 
 if (failed) {
