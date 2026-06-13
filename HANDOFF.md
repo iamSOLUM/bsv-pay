@@ -1,10 +1,12 @@
-# HANDOFF — bsv-pay Phase 2 (state as of 2026-06-12: v0.2.0 PUBLISHED — Phase 2 closed)
+# HANDOFF — bsv-pay (state as of 2026-06-13: Phase 2 SHIPPED — Phase 3 design discussion open)
 
-For a fresh session: read CLAUDE.md (invariants — they override everything), then
-AGENT-PHASE2.md (roadmap M8–M13), DECISIONS.md, this file. Run the verification
-suite once before touching code: `npm test && npm run lint && npm run format:check
-&& npm run build && npm run e2e:local` — all green at handoff (262 unit tests / 29
-files; e2e has 11 steps).
+For a fresh session: read CLAUDE.md (invariants — they override everything),
+then DECISIONS.md (especially the Phase 3 scoping entry), AGENT-PHASE3.md
+(the open roadmap), CONTRIBUTING.md (what external PRs are held to), and
+this file. AGENT-PHASE2.md is historical. Run the verification suite once
+before touching code: `npm test && npm run lint && npm run format:check &&
+npm run build && npm run e2e:local` — all green at handoff (262 unit tests /
+29 files; e2e has 11 steps).
 
 ## Done and owner-approved
 
@@ -168,17 +170,47 @@ What M13 delivered:
    first: npm's similarity check killed `bsvpay`, and the owner's call was
    one canonical name, not a third attempt.
 
-## Next: Phase 3 — identity-key payments (scoped 2026-06-13)
+## NOW (2026-06-13): Phase 3 design discussion is OPEN in the community issue
 
-A community proposal for identity-key receive (BRC-29 derivation, peer
-artifacts, `internalizeAction`) was assessed and owner-ratified as the
-Phase 3 thesis. Roadmap: **AGENT-PHASE3.md** (M14 bsv-pay↔bsv-pay rail,
-M15 external interop behind the real-app gate, M16 promotion checkpoint).
-Contributor rules: **CONTRIBUTING.md** (new). Key standing rule recorded
-in DECISIONS.md Phase 3: defaults flip by explicit opt-in and
-human-verified promotion only — never environment detection. Design
-discussion happens in the contributor's issue BEFORE code; the
-identity-key policy-list semantics decision is mandatory pre-code.
+Phase 2 is fully shipped: `bsv-pay-cli@0.2.0` is on npm, the **v0.2.0
+GitHub release is published**, and CI is green on main.
+
+The identity-key transport proposal (community issue) got the owner's
+scoping reply, posted 2026-06-13. The reply: welcomes the work, points at
+CONTRIBUTING.md + AGENT-PHASE3.md (M14 bsv-pay↔bsv-pay rail → M15
+external interop behind the real-app gate → M16 evidence-based promotion
+checkpoint), proposes the M14-shaped first PR, states the
+no-auto-default rule with its reasoning, and floats a delivery-envelope
+**strawman**: the payment request carries a payee-provided delivery URL;
+the payer POSTs `{derivationPrefix, derivationSuffix, senderIdentityKey,
+transaction: <AtomicBEEF, base64>}`; the payee validates, accepts via its
+wallet (or local derivation), ledgers the receive, answers 200 with a
+receipt; file exchange as the offline fallback.
+
+**Awaiting**: the contributor's reaction to the strawman and to the two
+pre-code design questions — (1) artifact delivery v1, (2) identity-key
+policy semantics (lists are address-string matches today; a denylisted
+identity key must provably block payment, ledgered). **Each settled
+answer becomes a DECISIONS.md entry BEFORE any code.**
+
+Next session's likely tasks, in order of probability:
+1. Help the owner evaluate and respond to the contributor's reply in the
+   issue (draft responses are shown to the owner first, never posted).
+2. Review an incoming M14 PR against CONTRIBUTING.md and the CLAUDE.md
+   invariants, if one arrives — the policy-gate scan/sweep and
+   key-boundary proofs are the teeth; the design questions must be
+   settled in the issue before code is reviewable.
+3. Nothing community-driven happens → idle; standing IOUs unchanged
+   (BRC-100 real-app pass still blocked on broken testnet faucets and
+   still gates `--experimental-brc100` promotion; never shop a third
+   alias name — DECISIONS M13).
+
+**Standing rules (owner-set, in force from 2026-06-13):**
+- Nothing is pushed to GitHub or posted publicly without the owner's
+  explicit go — per item; authorization never carries over.
+- Plan-first for any new milestone, M14 included.
+- Hard owner checkpoint before anything irreversible (publish, release,
+  history rewrite, public post).
 
 ## In-flight notes
 
